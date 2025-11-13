@@ -35,6 +35,12 @@ The workspace is organized into a set of specialized agents, each with its own d
 -   [Project Setup Guide](docs/setup_guide.md)
 -   [Architecture Diagrams](docs/architecture.md)
 
+## Milestone 2: Feature & Model Pipelines
+
+This milestone adds a streaming feature pipeline using Dataflow and scaffolds the hybrid model training architecture with BigQueryML and Vertex AI.
+
+-   **[Model Architecture](docs/model_architecture.md)**
+
 ## Milestone 1 Quickstart
 
 This milestone provisions the initial data ingestion pipeline for Binance and Uniswap data into BigQuery.

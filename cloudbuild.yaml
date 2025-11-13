@@ -48,6 +48,36 @@ steps:
       - --service-account
       - ${_CONNECTORS_SA}
 
+  - id: "Build Dataflow image"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/feature-pipeline:${SHORT_SHA}", "data_pipeline/"]
+  - id: "Push Dataflow image"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/feature-pipeline:${SHORT_SHA}"]
+  - id: "Stage Dataflow Template"
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "bash"
+    args:
+    - "-c"
+    - |
+      python -m pip install apache-beam[gcp]
+      # create template (flex template recommended) - example uses flex_template
+      gcloud dataflow flex-template build gs://${_DATAFLOW_BUCKET}/templates/feature_pipeline.json \
+        --image ${_ARTIFACT_REGISTRY_HOST}/feature-pipeline:${SHORT_SHA} \
+        --sdk-language "PYTHON" \
+        --flex-template-base-image "python3" \
+        --env FLEX_TEMPLATE_JAVA_MAIN_CLASS=unused
+  - id: "Run Dataflow Job (optional auto-start)"
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "bash"
+    args:
+    - "-c"
+    - |
+      gcloud dataflow jobs run feature-pipeline-$(date +%s) \
+        --gcs-location gs://${_DATAFLOW_BUCKET}/templates/feature_pipeline.json \
+        --region ${_REGION} \
+        --parameters input_topic=projects/${PROJECT_ID}/topics/market.binance.ethusdt,output_table=${PROJECT_ID}:trading_ingest.features_ethusdt,temp_location=gs://${_DATAFLOW_BUCKET}/temp,staging_location=gs://${_DATAFLOW_BUCKET}/staging
+
 # Optional: terraform apply step (if you want Cloud Build to apply infra changes)
   - id: "Terraform apply"
     name: "hashicorp/terraform:light"
@@ -62,9 +92,11 @@ steps:
 images:
   - ${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}
   - ${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}
+  - ${_ARTIFACT_REGISTRY_HOST}/feature-pipeline:${SHORT_SHA}
 
 substitutions:
   _ARTIFACT_REGISTRY_HOST: "us-central1-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}"
   _ARTIFACT_REPO: "${_ARTIFACT_REPOSITORY}"
   _REGION: "us-central1"
   _CONNECTORS_SA: "connectors-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+  _DATAFLOW_BUCKET: "${PROJECT_ID}-dataflow-templates"

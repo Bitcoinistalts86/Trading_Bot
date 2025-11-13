@@ -131,7 +131,7 @@ terraform apply
 ```
 
 This will provision:
--   A GKE cluster
+-   Cloud Run services
 -   Pub/Sub topics
 -   BigQuery datasets and tables
 -   Cloud Storage buckets
@@ -161,14 +161,14 @@ gcloud builds submit --config cloudbuild.yaml .
 This will:
 1.  Build a Docker image for each service.
 2.  Push the images to Artifact Registry.
-3.  Deploy the images to the GKE cluster.
+3.  Deploy the images to Cloud Run.
 
 ### 6. Verify the Deployment
 
 Once the Cloud Build pipeline has completed, you can verify that the services are running correctly.
 
 ```bash
-kubectl get pods -n default
+gcloud run services list --platform managed
 ```
 
-You should see pods for each of the deployed services. You can then access the web frontend via the load balancer IP address created by the GKE service.
+You should see the `binance-connector` and `uniswap-connector` services listed. You can then access the web frontend via the URL provided by the Cloud Run service.

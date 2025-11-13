@@ -21,3 +21,8 @@ variable "pubsub_topics" {
   type = list(string)
   default = ["market.binance.ethusdt", "market.uniswap.ethusdt", "features.ethusdt"]
 }
+
+variable "dataflow_region" {
+  type    = string
+  default = "us-central1"
+}
