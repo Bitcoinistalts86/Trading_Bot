@@ -1,0 +1,94 @@
+# Workspace Manifest
+# This file defines the agents, their APIs, endpoints, message topics,
+# model endpoints, and deploy URLs for the AI Trading & Arbitrage Platform.
+
+agents:
+  - name: Orchestrator
+    responsibilities:
+      - Create the workspace plan, spawn agents, set milestones, enforce interfaces.
+      - Maintain this manifest.
+      - Schedule integration check-ins.
+    deliverables:
+      - workspace/manifest.yaml
+      - milestone_schedule.md
+      - integration_test_harness/
+
+  - name: Data
+    responsibilities:
+      - Implement connectors for CEX (Binance) and DeX (Uniswap V3), plus a sample for traditional markets (OANDA).
+      - Ingest and normalize market data.
+      - Publish to Pub/Sub topics.
+      - Persist data to BigQuery and Cloud Storage.
+    deliverables:
+      - data_pipeline/
+    pubsub_topics:
+      - market.binance.ethusdt
+      - market.uniswap.ethusdc
+
+  - name: Feature
+    responsibilities:
+      - Implement feature extraction workloads.
+      - Provide streaming feature endpoints.
+    deliverables:
+      - features/
+    pubsub_topics:
+      - features.ethusdt
+
+  - name: Model
+    responsibilities:
+      - Build and train predictive models.
+      - Create and manage Vertex AI Pipelines.
+      - Implement model monitoring.
+    deliverables:
+      - model_pipeline/
+    endpoints:
+      - /v1/predict/microstructure
+      - /v1/predict/arbitrage
+
+  - name: Execution
+    responsibilities:
+      - Implement the execution service with smart order routing.
+      - Provide risk checks.
+      - Implement a kill-switch.
+    deliverables:
+      - execution_engine/
+    endpoints:
+      - /v1/order
+      - /v1/kill-switch
+
+  - name: Backend
+    responsibilities:
+      - Implement the API gateway.
+      - Handle authentication and authorization.
+      - Expose real-time data via WebSockets.
+    deliverables:
+      - api_gateway/
+    endpoints:
+      - /v1/signal
+
+  - name: Frontend
+    responsibilities:
+      - Develop the web and mobile user interfaces.
+    deliverables:
+      - frontend/
+      - mobile/
+
+  - name: DevOps
+    responsibilities:
+      - Provision infrastructure using Terraform.
+      - Create CI/CD pipelines.
+    deliverables:
+      - infra/
+
+  - name: Security
+    responsibilities:
+      - Design and implement security best practices.
+    deliverables:
+      - security/
+
+  - name: QA
+    responsibilities:
+      - Create and maintain the test suite.
+      - Build monitoring dashboards and alerts.
+    deliverables:
+      - qa/
