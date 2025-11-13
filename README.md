@@ -1,422 +1,79 @@
-# Trading_Bot
-Bot for trading 
-Nice — here are ready-to-use prompts you can drop into an LLM, a product brief, or hand to an engineering team. I give you three variants so you can pick the level of detail you want: Short (for quick use), Detailed (for engineering/product + architecture), and UI/UX & Mobile (focused on frontend & UX). Each includes goal, constraints, deliverables, success metrics, and safety/compliance reminders.
+# AI Trading & Arbitrage Platform
 
+This repository contains the source code for a production-grade AI trading and arbitrage platform. It is designed to be a multi-agent system, with each agent responsible for a specific component of the platform.
 
----
+## Global Objectives
 
-Short prompt (quick start — drop into an LLM or product backlog)
+1.  **Build a low-latency, reliable trading platform** with continuous model updates.
+2.  **Provide web (Next.js) + mobile (Flutter) UI** exposing real-time PnL, strategy controls, backtester and kill-switch.
+3.  **Start with Binance (CEX) + Uniswap V3 (DeX) + one traditional market** (e.g., FX via OANDA) as minimum viable connectors.
+4.  **Decision latency target: <100 ms** from event to order submission (document measurement method).
+5.  **Provide full CI/CD, infra-as-code, monitoring, model lifecycle, and paper-trading safety gates.**
 
-Build a world-class, low-latency AI trading & arbitrage platform for crypto (spot, futures, options, DeX) and conventional markets (equities, FX, futures, options). System must include:
+## Workspace Structure
 
-multi-exchange connectivity (CEX + DeX) and aggregated market data (L2 orderbooks, trades, OHLCV, options chains, funding rates),
+The workspace is organized into a set of specialized agents, each with its own directory and responsibilities. The `workspace/manifest.yaml` file provides a detailed overview of the agents and their interfaces.
 
-multiple strategies: market-making, trend following, statistical/arbitrage, options vol arbitrage, cross-exchange & cross-asset arbitrage,
+-   `api_gateway/`: Backend / API Agent
+-   `contracts/`: API contracts (OpenAPI, Protobuf)
+-   `data_pipeline/`: Data Agent
+-   `docs/`: Architecture diagrams, latency budgets, risk policies
+-   `examples/`: Scripts for paper trading and data replay
+-   `execution_engine/`: Execution Agent
+-   `features/`: Feature & Feature Store Agent
+-   `frontend/`: Frontend Agent (Web)
+-   `infra/`: DevOps / Infra Agent
+-   `mobile/`: Frontend Agent (Mobile)
+-   `model_pipeline/`: Model Agent (Vertex AI)
+-   `qa/`: QA / Ops Agent
+-   `security/`: Security & Compliance Agent
+-   `workspace/`: Orchestrator agent files
 
-high-performance decision engine (sub-100ms decision path) with continual model updates (online learning / continual training), ensemble models, risk controls and position sizing,
+## Getting Started
 
-robust backtesting + paper trading + simulation environment, live risk management, compliance (KYC/AML), secure custody for keys,
+### Prerequisites
 
-web + mobile apps (trader dashboard, execution controls, strategy builder, visual backtests, real-time P&L, alerts),
+-   Google Cloud SDK
+-   Terraform
+-   Docker
+-   Node.js
+-   Python
 
-monitoring, observability, CI/CD, automated testing, and clear documentation.
+### Deployment
 
+1.  **Initialize Terraform:**
+    ```bash
+    cd infra
+    terraform init
+    terraform apply
+    ```
 
-Deliverables: architecture diagram, API spec, strategy library, production code (backend, infra as code), responsive web app, native mobile apps, tests, deployment scripts, and runbooks.
+2.  **Deploy services:**
+    ```bash
+    gcloud builds submit --config cloudbuild.yaml .
+    ```
 
-Success: latency, fill rates, Sharpe/Sortino targets, and stress test resilience.
+## Communication & Interfaces
 
+Communication between agents is primarily handled through Pub/Sub topics and REST endpoints.
 
----
+### Pub/Sub Topics
 
-Detailed prompt (engineering + product spec — copy/paste into an LLM or project brief)
+-   `market.{exchange}.{instrument}`: Raw market data
+-   `features.{instrument}`: Real-time features
+-   `signals.{strategy}`: Trading signals
+-   `orders.{exchange}`: Order events
+-   `exec.{order_lifecycle}`: Execution traces
 
-Project: AI Trading & Arbitrage Platform — Global (Crypto + Traditional)
+### REST Endpoints
 
-Objective
-Design and deliver a production-grade trading platform that executes spot, futures, and options strategies across centralized exchanges (CEX) and decentralized exchanges (DeX), plus conventional markets (equities/FX/futures/options). The system should use world-class algorithms and real-time market data to decide in sub-second windows and continuously update models to adapt to regime changes.
+-   `POST /v1/signal`: Accepts a trading signal.
+-   `POST /v1/order`: Submits an order to the execution gateway.
+-   `POST /v1/kill-switch`: Activates the emergency kill-switch.
 
-Scope & Capabilities (must include)
+## Safety Guards
 
-1. Market connectivity
-
-Multi-exchange adapter layer for REST/WebSocket trading & market data (support orderbook L2/L3, trades, OHLCV, options chain, funding rates, implied vol).
-
-DeX interaction via on-chain nodes/relays and smart contract wallets for swaps, liquidity provision, and flash-arb opportunities.
-
-Aggregation layer that normalizes feeds, timestamps, and orderbook snapshots.
-
-
-
-2. Data & Storage
-
-Time-series store for tick + orderbook snapshots (high throughput, low latency read), persistent historical store for backtests.
-
-Feature pipeline: on-the-fly features (VWAP, orderflow imbalance, microstructure features, implied vol surfaces), static features (macro, calendar events).
-
-High-frequency data ingestion with sequence integrity and replayable streams.
-
-
-
-3. Strategy & Model Layer
-
-Strategy types: market-making, momentum, mean-reversion, statistical pairs, cross-exchange arbitrage, options vol/arbitrage, delta-hedging, liquidity-sensitive algorithms.
-
-Ensemble ML models: supervised (predictive microstructure), RL (execution & order placement), anomaly detectors, and Bayesian models for uncertainty.
-
-Model lifecycle: offline training, validation, shadow testing, online fine-tuning, and automated rollback if performance degrades.
-
-Decision policy with explainability signals and uncertainty quantification.
-
-
-
-4. Execution & Risk
-
-Low-latency execution engine (smart order routing, iceberg/twap/VWAP, adaptive order placement, cancel/replace).
-
-Real-time risk engine: per-strategy limits, per-account limits, margin & collateral checks, cross-asset exposure, stress scenarios.
-
-Latency budgets, order lifecycle tracing, transaction fee optimization (esp. gas optimization on DeX).
-
-
-
-5. Backtesting & Simulation
-
-Deterministic, exchange-level backtester with realistic execution modeling (slippage, partial fills, maker/taker fees).
-
-Market replay and Monte Carlo stress tests.
-
-Scenario builder: volatility shocks, liquidity droughts, exchange downtime.
-
-
-
-6. Continuous Learning
-
-Online learning or incremental model updates with safe deployment — shadow/Canary releases, A/B testing, automated monitoring of concept drift.
-
-Model registry, governance, versioning and reproducible training pipelines.
-
-
-
-7. Security & Compliance
-
-Secure key management (HSM / secure enclaves for on-chain signing), role-based access control, audit trails, and immutable trade logs.
-
-KYC/AML hooks, regulatory reporting pipelines, trade surveillance for manipulative behavior.
-
-Penetration testing, SOC-2 style controls, encryption at rest/in transit.
-
-
-
-8. Infrastructure & Ops
-
-Highly available, fault tolerant infra (multi-AZ, autoscaling), infra-as-code, scalable streaming (Kafka or equivalent), containerized services, low-latency colocated nodes (optional).
-
-Observability: metrics, distributed tracing, alerting, dashboards, replayable logs.
-
-CI/CD pipelines, automated tests (unit, integration, e2e).
-
-
-
-9. UI / UX (Web & Mobile)
-
-Real-time trader dashboard: multi-exchange orderbooks, charting, strategy controls, visual backtest reports, P&L & risk overview, trade ticket, audit trail.
-
-Strategy builder: no-code flow + code IDE for quant devs. Mobile push alerts, quick actions to pause/stop strategies.
-
-Clean, responsive design with accessibility in mind.
-
-
-
-
-Deliverables (concrete)
-
-Product requirements & prioritized feature list.
-
-High-level architecture diagram + dataflow.
-
-API spec for exchange adapters and client SDKs (REST & WebSocket).
-
-Strategy library (3–5 reference implementations plus templates).
-
-Backtesting engine & dataset samples.
-
-Production backend services, infra code, CI/CD pipelines.
-
-Web app (React/Tailwind or equivalent) and native mobile apps (iOS/Android).
-
-Monitoring dashboards, runbooks, and incident response plan.
-
-Security & compliance checklist and audit reports.
-
-Documentation, onboarding guide, and test harness.
-
-
-Performance & Metrics (targets — tune to risk appetite)
-
-Decision latency budget: <100 ms from new data to order placement (provide breakdown per component).
-
-99.9% system availability during trading hours.
-
-Execution fill quality / slippage targets per instrument.
-
-Strategy metrics: Sharpe, Sortino, max drawdown, hit rate, and tail-risk measures.
-
-Model drift detection: automatic retrain trigger when performance drops by X% (configurable).
-
-
-Acceptance criteria
-
-All core strategies pass backtest and live paper tests for a minimum period with defined metrics.
-
-End-to-end deployment to staging and production with rollback capability.
-
-Security tests passed (penetration, key management) and compliance hooks in place.
-
-
-Safety & Ethical constraints
-
-Prevent market manipulation, respect exchange T&Cs.
-
-Explicit kill-switch and human override for all automated capital moves.
-
-Clear disclosure of risk and disclaimers in UI.
-
-
-Extras (optional but desirable)
-
-Strategy marketplace & sandbox for 3rd-party algos (with code vetting & restricted execution).
-
-Auto-hedging and collateral optimization across exchanges.
-
-Liquidation avoidance strategies and margin optimizer.
-
-
-Use this as a starting point to produce an implementation plan, architecture docs, backlog with JIRA tickets, and code scaffolding.
-
-
----
-
-UI/UX & Mobile prompt (design + product copy you can hand to designers)
-
-Design and deliver a polished, professional web and mobile trading experience for the AI trading & arbitrage platform described above.
-
-Design goals
-
-Professional, minimal, information-dense but readable screens for pro traders; simplified and friendly flows for less technical users.
-
-Real-time feedback, zero lag animations for orderbook updates; emphasis on clarity for risk and P&L.
-
-Cohesive design system (colors, spacing, icons, typography), accessible and optimized for desktop, tablet and phone.
-
-
-Key screens & components
-
-Landing / Dashboard: market overview, aggregated balances, quick strategy status, major P&L.
-
-Trading Terminal: multi-pane workspace — orderbook, depth chart, time & sales, chart with indicators, order ticket (advanced options).
-
-Strategy Builder: blocks/no-code builder + code editor (with syntax highlighting, test run button).
-
-Backtest & Reports: interactive charts, trade list, drawdown waterfall, parameter sensitivity slider.
-
-Portfolio & Risk: margin, exposure, per-asset Greeks (for options), risk limits, alerts.
-
-Activity & Audit: full trade log, model version used, execution trace links.
-
-Mobile specific: compact order ticket, push alerts, one-tap pause/resume strategy, safe confirmation for big actions.
-
-
-UX details
-
-Real-time state indicators; color and motion should be informative not flashy.
-
-Smart defaults for novice users; expert mode toggle for advanced controls.
-
-Inline help, tooltips, and guided tours.
-
-Offline/poor connectivity handling — show last known state, warn on stale data.
-
-
-Deliverables
-
-Design system (Figma), component library, responsive prototypes, accessibility audit, and UI specs for mobile & web.
-
-
-
----
-
-Example system prompt / role prompt for an LLM (so it understands the task)
-
-You are an expert quant-engineer and full-stack architect with 10+ years building production trading systems for institutional clients. Your objective is to design and produce a complete plan to build a high-performance AI trading & arbitrage platform (crypto & traditional markets) that meets the requirements in the product brief. Always provide architecture diagrams (ASCII or mermaid), API specs, prioritized implementation milestones, testing plans, and measurable acceptance criteria. When outputting code, include tests and deployment instructions. Emphasize safety, explainability, and rollback strategies.
-
-
----
-
-Quick copy/paste variants
-
-One-liner for a sprint ticket:
-Build an enterprise AI trading & arbitrage system supporting spot/futures/options across CEX + DeX and conventional markets — includes low-latency execution, continuous model updates, backtesting, risk controls, and full web & mobile UX.
-
-Developer kickoff:
-Create repo skeletons for: exchange-adapters, market-ingest, feature-pipeline, model-training, execution-engine, backtester, api-gateway, web-frontend, mobile-apps, infra. Start with one exchange + a DeX pair and one market-making & one arb strategy.
-
-
-
----
-
-Notes & recommendations
-
-Start small: pick 1 CEX + 1 DeX + 1 traditional market to validate core loops (data → model → execution → risk → monitoring). Expand incrementally.
-
-Separate research (slow, experimental) from execution (fast, audited). Shadow mode is your friend.
-
-Build strong simulation/backtest & deterministic replay before risking real capital.
-
-Invest in observability and immutable audit logs — essential for debugging trades and for compliance.
-
-Security is not optional — keys, signing, and funds custody require hardened solutions (consider HSM or third-party custody).
-
-
-
----
-
-If you want, I can:
-
-convert the Detailed prompt into a prioritized 12-week roadmap with milestones and deliverables, or
-
-generate the initial architecture diagram (Mermaid) and a starter repo scaffold (file list + README) for you to hand to engineers.
-
-
-Which of those next steps would you like me to do now?
-
-
----
-
-## Architecture
-
-Here is a high-level overview of the system architecture.
-
-```mermaid
-graph TD
-    subgraph "External Markets"
-        direction LR
-        CEX[CEXs]
-        DeX[DeXs]
-        Trad[Traditional]
-    end
-
-    subgraph "Data Ingestion & Processing"
-        direction TB
-        Adapters[exchange-adapters]
-        Ingest[market-ingest]
-        Features[feature-pipeline]
-    end
-
-    subgraph "Core Logic"
-        direction TB
-        Training[model-training]
-        Execution[execution-engine]
-        Backtesting[backtester]
-    end
-
-    subgraph "User Interface"
-        direction RL
-        API[api-gateway]
-        Web[web-frontend]
-        Mobile[mobile-apps]
-    end
-
-    subgraph "Data Stores"
-        direction TB
-        TSDB[Time-Series DB]
-        ModelRegistry[Model Registry]
-    end
-
-    %% Connections
-    External_Markets -- "Raw Market Data" --> Adapters
-    Adapters -- "Normalized Data" --> Ingest
-    Ingest -- "Real-time & Historical Data" --> TSDB
-    Ingest -- "Live Data Stream" --> Features
-    Features -- "Real-time Features" --> Execution
-    TSDB -- "Historical Data" --> Features
-
-    Features -- "Features for Training" --> Training
-    TSDB -- "Historical Data" --> Training
-    Training -- "Trained Models" --> ModelRegistry
-    ModelRegistry -- "Models" --> Execution
-    ModelRegistry -- "Models" --> Backtesting
-    TSDB -- "Historical Data" --> Backtesting
-
-    Execution -- "Trade Orders" --> Adapters
-    Adapters -- "Order Execution" --> External_Markets
-
-    Web -- "User Actions" --> API
-    Mobile -- "User Actions" --> API
-    API -- "Commands & Queries" --> Execution
-    API -- "Commands & Queries" --> Backtesting
-    API -- "Commands & Queries" --> Training
-
-    Execution -- "Live P&L, Risk" --> API
-    Backtesting -- "Test Results" --> API
-    API -- "Data" --> Web & Mobile
-```
-
----
-
-## 12-Week Roadmap
-
-Here is a proposed 12-week roadmap to deliver the core functionality of the platform.
-
-### Weeks 1-2: Core Infrastructure & Data Ingestion
-- **Goal:** Establish foundational infrastructure and data pipelines.
-- **Deliverables:**
-    - Basic CI/CD pipeline in `infra`.
-    - `exchange-adapters`: Implement WebSocket client for one CEX (e.g., Binance) and one DeX (e.g., Uniswap via Infura/Alchemy).
-    - `market-ingest`: Service to consume data from adapters and write to a time-series database (e.g., InfluxDB or TimescaleDB).
-    - `infra`: Basic Kubernetes setup with Terraform.
-- **Milestone:** Live L2 order book data from one CEX and one DeX flowing into the time-series database.
-
-### Weeks 3-4: Feature Pipeline & Basic Strategy
-- **Goal:** Develop initial feature engineering and a simple trading strategy.
-- **Deliverables:**
-    - `feature-pipeline`: Implement basic features like VWAP, order book imbalance.
-    - `model-training`: Skeleton for training pipeline.
-    - `backtester`: Initial version that can replay historical data from the time-series DB.
-    - `execution-engine`: Skeleton service, can connect to adapters.
-    - **Strategy:** Implement a simple market-making or arbitrage strategy.
-- **Milestone:** Backtest the simple strategy against historical data.
-
-### Weeks 5-6: Execution Engine & Risk Management
-- **Goal:** Build out the execution logic and initial risk controls.
-- **Deliverables:**
-    - `execution-engine`: Implement smart order routing (SOR) for the two connected exchanges. Implement basic order types (Market, Limit).
-    - `execution-engine`: Basic real-time risk engine (position limits, max exposure).
-    - `api-gateway`: Basic API for placing orders and checking positions.
-- **Milestone:** Execute paper trades on a live data feed using the simple strategy.
-
-### Weeks 7-8: Web Frontend & API Gateway
-- **Goal:** Develop the user interface for monitoring and control.
-- **Deliverables:**
-    - `web-frontend`: Trader dashboard showing real-time order books, P&L, and positions.
-    - `api-gateway`: Expand API to support all frontend data requirements.
-    - `web-frontend`: Basic order entry form.
-- **Milestone:** User can view live market data and their paper trading P&L from the web interface.
-
-### Weeks 9-10: Advanced Strategy & Model Training
-- **Goal:** Implement a more complex, ML-based strategy.
-- **Deliverables:**
-    - `model-training`: Full training pipeline for a simple predictive model (e.g., predict mid-price movement).
-    - `model-training`: Integration with a model registry.
-    - `execution-engine`: Integrate the ML model for generating trading signals.
-    - **Strategy:** Implement a momentum or mean-reversion strategy based on the ML model.
-- **Milestone:** Backtest the new ML-based strategy and compare its performance to the simple strategy.
-
-### Weeks 11-12: Mobile App, Security & Deployment Prep
-- **Goal:** Prepare for production deployment and provide mobile access.
-- **Deliverables:**
-    - `mobile-apps`: Basic mobile app (iOS or Android) for monitoring P&L and strategy status (pause/resume).
-    - **Security:** Implement secure key management (e.g., HashiCorp Vault). Implement authentication and authorization on the API Gateway.
-    - `infra`: Production-ready Kubernetes cluster configuration. Monitoring and alerting setup (e.g., Prometheus, Grafana).
-    - **Compliance:** Add basic audit logging.
-- **Milestone:** End-to-end deployment to a staging environment. All core features are functional.
+-   **Paper-first:** New strategies must run in paper trading mode before live deployment.
+-   **Human-in-loop:** Significant changes to trading logic require operator approval.
+-   **Kill-Switch:** A global kill-switch is available to halt all trading activity.
+-   **Audit:** All trades are logged to an immutable ledger in BigQuery.

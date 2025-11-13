@@ -1,0 +1,23 @@
+// Protobuf schema for the AI Trading & Arbitrage Platform
+
+syntax = "proto3";
+
+package trading;
+
+// A normalized market data message
+message MarketData {
+  string exchange = 1;
+  string instrument = 2;
+  int64 timestamp = 3;
+  // ... other fields
+}
+
+// A trading signal
+message Signal {
+  string strategy = 1;
+  string instrument = 2;
+  int64 timestamp = 3;
+  double price = 4;
+  double size = 5;
+  // ... other fields
+}
