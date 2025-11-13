@@ -289,3 +289,134 @@ generate the initial architecture diagram (Mermaid) and a starter repo scaffold 
 
 
 Which of those next steps would you like me to do now?
+
+
+---
+
+## Architecture
+
+Here is a high-level overview of the system architecture.
+
+```mermaid
+graph TD
+    subgraph "External Markets"
+        direction LR
+        CEX[CEXs]
+        DeX[DeXs]
+        Trad[Traditional]
+    end
+
+    subgraph "Data Ingestion & Processing"
+        direction TB
+        Adapters[exchange-adapters]
+        Ingest[market-ingest]
+        Features[feature-pipeline]
+    end
+
+    subgraph "Core Logic"
+        direction TB
+        Training[model-training]
+        Execution[execution-engine]
+        Backtesting[backtester]
+    end
+
+    subgraph "User Interface"
+        direction RL
+        API[api-gateway]
+        Web[web-frontend]
+        Mobile[mobile-apps]
+    end
+
+    subgraph "Data Stores"
+        direction TB
+        TSDB[Time-Series DB]
+        ModelRegistry[Model Registry]
+    end
+
+    %% Connections
+    External_Markets -- "Raw Market Data" --> Adapters
+    Adapters -- "Normalized Data" --> Ingest
+    Ingest -- "Real-time & Historical Data" --> TSDB
+    Ingest -- "Live Data Stream" --> Features
+    Features -- "Real-time Features" --> Execution
+    TSDB -- "Historical Data" --> Features
+
+    Features -- "Features for Training" --> Training
+    TSDB -- "Historical Data" --> Training
+    Training -- "Trained Models" --> ModelRegistry
+    ModelRegistry -- "Models" --> Execution
+    ModelRegistry -- "Models" --> Backtesting
+    TSDB -- "Historical Data" --> Backtesting
+
+    Execution -- "Trade Orders" --> Adapters
+    Adapters -- "Order Execution" --> External_Markets
+
+    Web -- "User Actions" --> API
+    Mobile -- "User Actions" --> API
+    API -- "Commands & Queries" --> Execution
+    API -- "Commands & Queries" --> Backtesting
+    API -- "Commands & Queries" --> Training
+
+    Execution -- "Live P&L, Risk" --> API
+    Backtesting -- "Test Results" --> API
+    API -- "Data" --> Web & Mobile
+```
+
+---
+
+## 12-Week Roadmap
+
+Here is a proposed 12-week roadmap to deliver the core functionality of the platform.
+
+### Weeks 1-2: Core Infrastructure & Data Ingestion
+- **Goal:** Establish foundational infrastructure and data pipelines.
+- **Deliverables:**
+    - Basic CI/CD pipeline in `infra`.
+    - `exchange-adapters`: Implement WebSocket client for one CEX (e.g., Binance) and one DeX (e.g., Uniswap via Infura/Alchemy).
+    - `market-ingest`: Service to consume data from adapters and write to a time-series database (e.g., InfluxDB or TimescaleDB).
+    - `infra`: Basic Kubernetes setup with Terraform.
+- **Milestone:** Live L2 order book data from one CEX and one DeX flowing into the time-series database.
+
+### Weeks 3-4: Feature Pipeline & Basic Strategy
+- **Goal:** Develop initial feature engineering and a simple trading strategy.
+- **Deliverables:**
+    - `feature-pipeline`: Implement basic features like VWAP, order book imbalance.
+    - `model-training`: Skeleton for training pipeline.
+    - `backtester`: Initial version that can replay historical data from the time-series DB.
+    - `execution-engine`: Skeleton service, can connect to adapters.
+    - **Strategy:** Implement a simple market-making or arbitrage strategy.
+- **Milestone:** Backtest the simple strategy against historical data.
+
+### Weeks 5-6: Execution Engine & Risk Management
+- **Goal:** Build out the execution logic and initial risk controls.
+- **Deliverables:**
+    - `execution-engine`: Implement smart order routing (SOR) for the two connected exchanges. Implement basic order types (Market, Limit).
+    - `execution-engine`: Basic real-time risk engine (position limits, max exposure).
+    - `api-gateway`: Basic API for placing orders and checking positions.
+- **Milestone:** Execute paper trades on a live data feed using the simple strategy.
+
+### Weeks 7-8: Web Frontend & API Gateway
+- **Goal:** Develop the user interface for monitoring and control.
+- **Deliverables:**
+    - `web-frontend`: Trader dashboard showing real-time order books, P&L, and positions.
+    - `api-gateway`: Expand API to support all frontend data requirements.
+    - `web-frontend`: Basic order entry form.
+- **Milestone:** User can view live market data and their paper trading P&L from the web interface.
+
+### Weeks 9-10: Advanced Strategy & Model Training
+- **Goal:** Implement a more complex, ML-based strategy.
+- **Deliverables:**
+    - `model-training`: Full training pipeline for a simple predictive model (e.g., predict mid-price movement).
+    - `model-training`: Integration with a model registry.
+    - `execution-engine`: Integrate the ML model for generating trading signals.
+    - **Strategy:** Implement a momentum or mean-reversion strategy based on the ML model.
+- **Milestone:** Backtest the new ML-based strategy and compare its performance to the simple strategy.
+
+### Weeks 11-12: Mobile App, Security & Deployment Prep
+- **Goal:** Prepare for production deployment and provide mobile access.
+- **Deliverables:**
+    - `mobile-apps`: Basic mobile app (iOS or Android) for monitoring P&L and strategy status (pause/resume).
+    - **Security:** Implement secure key management (e.g., HashiCorp Vault). Implement authentication and authorization on the API Gateway.
+    - `infra`: Production-ready Kubernetes cluster configuration. Monitoring and alerting setup (e.g., Prometheus, Grafana).
+    - **Compliance:** Add basic audit logging.
+- **Milestone:** End-to-end deployment to a staging environment. All core features are functional.
