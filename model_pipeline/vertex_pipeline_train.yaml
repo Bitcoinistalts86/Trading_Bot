@@ -1,0 +1,28 @@
+# Vertex SDK pipeline can also be created via Python SDK. This YAML is a high-level conceptual pipeline.
+components:
+  - id: import_data
+    implementation:
+      container:
+        image: gcr.io/cloud-aiplatform/pipelines/google-cloud-pipeline-components:latest
+        command:
+          - python
+          - -c
+          - |
+            # reads BigQuery and outputs training CSV to GCS
+  - id: train
+    implementation:
+      container:
+        image: gcr.io/${PROJECT_ID}/ml-trainers/train:latest
+        command: ["python","trainer/task.py","--train_data", "{{import_data.output}}", "--model_dir", "gs://${PROJECT_ID}-models/modeldir"]
+  - id: eval
+    implementation:
+      container:
+        image: gcr.io/${PROJECT_ID}/ml-trainers/eval:latest
+        command: ["python","trainer/eval.py","--model_dir","gs://${PROJECT_ID}-models/modeldir"]
+  - id: deploy
+    implementation:
+      container:
+        image: gcr.io/cloud-aiplatform/pipeline-components:latest
+        command: ["python","-m","aiplatform.endpoints.deploy"]
+    inputs:
+      - eval.metrics

@@ -13,3 +13,10 @@ output "bigquery_dataset" {
 output "connectors_service_account" {
   value = google_service_account.connectors_sa.email
 }
+
+output "dataflow_templates_bucket" {
+  value = google_storage_bucket.dataflow_templates.name
+}
+output "dataflow_service_account" {
+  value = google_service_account.dataflow_sa.email
+}
