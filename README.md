@@ -35,6 +35,44 @@ The workspace is organized into a set of specialized agents, each with its own d
 -   [Project Setup Guide](docs/setup_guide.md)
 -   [Architecture Diagrams](docs/architecture.md)
 
+## Milestone 1 Quickstart
+
+This milestone provisions the initial data ingestion pipeline for Binance and Uniswap data into BigQuery.
+
+### Prerequisites
+
+-   gcloud CLI authenticated and project set
+-   Docker installed (for local builds)
+-   Terraform v1.x
+-   Cloud Build enabled and Artifact Registry created
+
+### 1) Configure env vars
+```bash
+export PROJECT_ID=your-project-id
+export REGION=us-central1
+export ARTIFACT_REPOSITORY=ai-trading-artifacts
+```
+
+### 2) Deploy infra (local)
+```bash
+./scripts/deploy_tf.sh
+```
+
+### 3) Build & deploy via Cloud Build
+```bash
+gcloud builds submit --config cloudbuild.yaml --substitutions=_ARTIFACT_REPOSITORY=${ARTIFACT_REPOSITORY}
+```
+
+### 4) Run connectors locally
+```bash
+./scripts/local_run.sh
+```
+
+### 5) Replay sample data
+```bash
+python examples/replay_sample.py
+```
+
 ## Getting Started
 
 ### Prerequisites

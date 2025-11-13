@@ -20,10 +20,10 @@ agents:
       - Publish to Pub/Sub topics.
       - Persist data to BigQuery and Cloud Storage.
     deliverables:
-      - data_pipeline/
+      - connectors/
     pubsub_topics:
       - market.binance.ethusdt
-      - market.uniswap.ethusdc
+      - market.uniswap.ethusdt
 
   - name: Feature
     responsibilities:
@@ -92,3 +92,14 @@ agents:
       - Build monitoring dashboards and alerts.
     deliverables:
       - qa/
+
+services:
+  - name: binance-connector
+    cloudrun: true
+  - name: uniswap-connector
+    cloudrun: true
+
+bigquery:
+  dataset: trading_ingest
+  tables:
+    - raw_ticks
