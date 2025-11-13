@@ -37,3 +37,15 @@ flowchart LR
     -   **Serving:** Low-latency model serving via Vertex AI Endpoints.
     -   **Monitoring:** Model and feature drift detection to trigger retraining.
     -   **Feature Store:** A centralized repository for sharing features between training and serving.
+
+## Retraining Flow
+
+```mermaid
+flowchart TD
+    A[Model Monitoring] -->|Drift Detected| B[Cloud Function / Cloud Run]
+    B -->|Publish Message| C[Pub/Sub: model.retrain.trigger]
+    C --> D[Vertex AI Pipeline]
+    D --> E[Retrain Model]
+    E --> F[Evaluate Model]
+    F -->|Performance OK| G[Deploy to Endpoint]
+```

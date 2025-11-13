@@ -41,6 +41,12 @@ This milestone adds a streaming feature pipeline using Dataflow and scaffolds th
 
 -   **[Model Architecture](docs/model_architecture.md)**
 
+## Milestone 3: Model Training & Continuous Learning
+
+This milestone scaffolds the model training and continuous learning pipelines using Vertex AI.
+
+-   **[Training Guide](docs/training_guide.md)**
+
 ## Milestone 1 Quickstart
 
 This milestone provisions the initial data ingestion pipeline for Binance and Uniswap data into BigQuery.
