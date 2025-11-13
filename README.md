@@ -29,6 +29,12 @@ The workspace is organized into a set of specialized agents, each with its own d
 -   `security/`: Security & Compliance Agent
 -   `workspace/`: Orchestrator agent files
 
+## Documentation
+
+-   [Technology Stack & Data Structures](docs/technology_stack.md)
+-   [Project Setup Guide](docs/setup_guide.md)
+-   [Architecture Diagrams](docs/architecture.md)
+
 ## Getting Started
 
 ### Prerequisites
