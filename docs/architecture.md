@@ -13,15 +13,21 @@ graph TD
         Trad[Traditional]
     end
 
-    subgraph "Data Ingestion & Processing"
+    subgraph "Data & Feature Pipelines"
         direction TB
-        Data[data_pipeline]
-        Features[features]
+        Connectors[connectors]
+        Dataflow[data_pipeline/beam_feature_pipeline]
     end
 
-    subgraph "Core Logic"
+    subgraph "Model Lifecycle"
         direction TB
-        Model[model_pipeline]
+        BQML[ml/bqml]
+        Training[model_pipeline]
+        Retraining[retraining_trigger]
+    end
+
+    subgraph "Trading & Execution"
+        direction TB
         Execution[execution_engine]
     end
 
@@ -34,28 +40,28 @@ graph TD
 
     subgraph "Data Stores"
         direction TB
-        TSDB[Time-Series DB]
-        ModelRegistry[Model Registry]
+        TSDB[BigQuery]
+        ModelRegistry[Vertex AI Model Registry]
     end
 
     %% Connections
-    External_Markets -- "Raw Market Data" --> Data
-    Data -- "Normalized Data" --> Features
-    Features -- "Real-time Features" --> Execution
-    Data -- "Historical Data" --> TSDB
-    TSDB -- "Historical Data" --> Features
-    TSDB -- "Historical Data" --> Model
+    External_Markets -- "Raw Market Data" --> Connectors
+    Connectors -- "Normalized Data (Pub/Sub)" --> Dataflow
+    Dataflow -- "Features" --> TSDB
 
-    Model -- "Trained Models" --> ModelRegistry
+    TSDB -- "Training Data" --> BQML
+    TSDB -- "Training Data" --> Training
+    Training -- "Trained Models" --> ModelRegistry
     ModelRegistry -- "Models" --> Execution
 
-    Execution -- "Trade Orders" --> Data
-    Data -- "Order Execution" --> External_Markets
+    Retraining -- "Trigger (Pub/Sub)" --> Training
+
+    Execution -- "Trade Orders" --> Connectors
 
     Web -- "User Actions" --> API
     Mobile -- "User Actions" --> API
     API -- "Commands & Queries" --> Execution
-    API -- "Commands & Queries" --> Model
+    API -- "Commands & Queries" --> Training
 
     Execution -- "Live P&L, Risk" --> API
     API -- "Data" --> Web

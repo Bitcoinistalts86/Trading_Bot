@@ -47,6 +47,12 @@ This milestone scaffolds the model training and continuous learning pipelines us
 
 -   **[Training Guide](docs/training_guide.md)**
 
+## Milestone 4: Execution Engine & Smart Order Router
+
+This milestone adds the execution engine, which is responsible for receiving trading signals, routing orders, and managing risk.
+
+-   **[Execution & Risk Control](docs/execution_guide.md)**
+
 ## Milestone 1 Quickstart
 
 This milestone provisions the initial data ingestion pipeline for Binance and Uniswap data into BigQuery.
