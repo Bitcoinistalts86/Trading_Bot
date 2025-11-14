@@ -19,7 +19,7 @@ variable "artifact_registry" {
 
 variable "pubsub_topics" {
   type    = list(string)
-  default = ["market.binance.ethusdt", "market.uniswap.ethusdt", "features.ethusdt", "model.retrain.trigger"]
+  default = ["market.binance.raw", "market.uniswap.raw"]
 }
 
 variable "dataflow_region" {

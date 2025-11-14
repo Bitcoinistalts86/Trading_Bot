@@ -1,25 +1,55 @@
-resource "google_bigquery_dataset" "ingest" {
-  dataset_id = "trading_ingest"
+resource "google_bigquery_dataset" "market_data" {
+  dataset_id = "market_data"
   location   = var.location
-  description = "Ingested market data for trading platform"
-  default_table_expiration_ms = null
+  description = "Market data for the AI trading platform"
 }
 
-resource "google_bigquery_table" "raw_ticks" {
-  dataset_id = google_bigquery_dataset.ingest.dataset_id
-  table_id   = "raw_ticks"
+resource "google_bigquery_table" "binance_trades" {
+  dataset_id = google_bigquery_dataset.market_data.dataset_id
+  table_id   = "binance_trades"
 
   schema = <<EOF
 [
-  {"name":"exchange","type":"STRING"},
-  {"name":"instrument","type":"STRING"},
-  {"name":"ts","type":"TIMESTAMP"},
-  {"name":"payload","type":"STRING"}
+  {"name": "trade_id", "type": "INTEGER", "mode": "NULLABLE"},
+  {"name": "exchange", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "instrument", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "timestamp", "type": "TIMESTAMP", "mode": "REQUIRED"},
+  {"name": "price", "type": "FLOAT", "mode": "REQUIRED"},
+  {"name": "quantity", "type": "FLOAT", "mode": "REQUIRED"},
+  {"name": "side", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "raw_message", "type": "STRING", "mode": "NULLABLE"}
 ]
 EOF
 
   time_partitioning {
     type = "DAY"
-    field = "ts"
+    field = "timestamp"
+  }
+}
+
+resource "google_bigquery_table" "uniswap_swaps" {
+  dataset_id = google_bigquery_dataset.market_data.dataset_id
+  table_id   = "uniswap_swaps"
+
+  schema = <<EOF
+[
+  {"name": "transaction_hash", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "log_index", "type": "INTEGER", "mode": "REQUIRED"},
+  {"name": "exchange", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "pair", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "timestamp", "type": "TIMESTAMP", "mode": "REQUIRED"},
+  {"name": "amount0_in", "type": "FLOAT", "mode": "NULLABLE"},
+  {"name": "amount1_in", "type": "FLOAT", "mode": "NULLABLE"},
+  {"name": "amount0_out", "type": "FLOAT", "mode": "NULLABLE"},
+  {"name": "amount1_out", "type": "FLOAT", "mode": "NULLABLE"},
+  {"name": "sender", "type": "STRING", "mode": "NULLABLE"},
+  {"name": "to", "type": "STRING", "mode": "NULLABLE"},
+  {"name": "raw_message", "type": "STRING", "mode": "NULLABLE"}
+]
+EOF
+
+  time_partitioning {
+    type = "DAY"
+    field = "timestamp"
   }
 }

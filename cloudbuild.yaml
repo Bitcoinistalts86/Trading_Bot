@@ -1,5 +1,6 @@
-# Cloud Build pipeline: build connector images and deploy to Cloud Run, then run Terraform apply (optional step)
+# Cloud Build pipeline: build connector images and deploy to Cloud Run
 steps:
+  # --- Binance Connector ---
   - id: "Build binance connector"
     name: "gcr.io/cloud-builders/docker"
     args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}", "connectors/binance-connector"]
@@ -8,6 +9,25 @@ steps:
     name: "gcr.io/cloud-builders/docker"
     args: ["push", "${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}"]
 
+  - id: "Deploy binance to Cloud Run"
+    name: "gcr.io/cloud-builders/gcloud"
+    args:
+      - run
+      - deploy
+      - binance-connector
+      - --image
+      - "${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}"
+      - --region
+      - "${_REGION}"
+      - --platform
+      - managed
+      - --no-allow-unauthenticated
+      - --service-account
+      - "${_CONNECTORS_SA}"
+      - --set-env-vars
+      - "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},PUBSUB_TOPIC=market.binance.raw,INSTRUMENT=${_BINANCE_INSTRUMENT}"
+
+  # --- Uniswap Connector ---
   - id: "Build uniswap connector"
     name: "gcr.io/cloud-builders/docker"
     args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}", "connectors/uniswap-connector"]
@@ -16,22 +36,6 @@ steps:
     name: "gcr.io/cloud-builders/docker"
     args: ["push", "${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}"]
 
-  - id: "Deploy binance to Cloud Run"
-    name: "gcr.io/cloud-builders/gcloud"
-    args:
-      - run
-      - deploy
-      - binance-connector
-      - --image
-      - ${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}
-      - --region
-      - ${_REGION}
-      - --platform
-      - managed
-      - --allow-unauthenticated
-      - --service-account
-      - ${_CONNECTORS_SA}
-
   - id: "Deploy uniswap to Cloud Run"
     name: "gcr.io/cloud-builders/gcloud"
     args:
@@ -39,105 +43,28 @@ steps:
       - deploy
       - uniswap-connector
       - --image
-      - ${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}
+      - "${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}"
       - --region
-      - ${_REGION}
+      - "${_REGION}"
       - --platform
       - managed
-      - --allow-unauthenticated
+      - --no-allow-unauthenticated
       - --service-account
-      - ${_CONNECTORS_SA}
-
-  - id: "Build Dataflow image"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/feature-pipeline:${SHORT_SHA}", "data_pipeline/"]
-  - id: "Push Dataflow image"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/feature-pipeline:${SHORT_SHA}"]
-  - id: "Stage Dataflow Template"
-    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
-    entrypoint: "bash"
-    args:
-    - "-c"
-    - |
-      python -m pip install apache-beam[gcp]
-      # create template (flex template recommended) - example uses flex_template
-      gcloud dataflow flex-template build gs://${_DATAFLOW_BUCKET}/templates/feature_pipeline.json \
-        --image ${_ARTIFACT_REGISTRY_HOST}/feature-pipeline:${SHORT_SHA} \
-        --sdk-language "PYTHON" \
-        --flex-template-base-image "python3" \
-        --env FLEX_TEMPLATE_JAVA_MAIN_CLASS=unused
-  - id: "Run Dataflow Job (optional auto-start)"
-    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
-    entrypoint: "bash"
-    args:
-    - "-c"
-    - |
-      gcloud dataflow jobs run feature-pipeline-$(date +%s) \
-        --gcs-location gs://${_DATAFLOW_BUCKET}/templates/feature_pipeline.json \
-        --region ${_REGION} \
-        --parameters input_topic=projects/${PROJECT_ID}/topics/market.binance.ethusdt,output_table=${PROJECT_ID}:trading_ingest.features_ethusdt,temp_location=gs://${_DATAFLOW_BUCKET}/temp,staging_location=gs://${_DATAFLOW_BUCKET}/staging
-
-# Optional: terraform apply step (if you want Cloud Build to apply infra changes)
-  - id: "Terraform apply"
-    name: "hashicorp/terraform:light"
-    entrypoint: "/bin/sh"
-    args:
-      - -c
-      - |
-        cd infra/terraform
-        terraform init -input=false
-        terraform apply -auto-approve -input=false
-
-  - id: "Build trainer image"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/trainer:${SHORT_SHA}", "model_pipeline/trainer"]
-  - id: "Push trainer image"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/trainer:${SHORT_SHA}"]
-
-  - id: "Build retraining trigger image"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/retraining-trigger:${SHORT_SHA}", "retraining_trigger"]
-  - id: "Push retraining trigger image"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/retraining-trigger:${SHORT_SHA}"]
-
-  - id: "Deploy retraining trigger to Cloud Run"
-    name: "gcr.io/cloud-builders/gcloud"
-    args:
-      - run
-      - deploy
-      - retraining-trigger
-      - --image
-      - ${_ARTIFACT_REGISTRY_HOST}/retraining-trigger:${SHORT_SHA}
-      - --region
-      - ${_REGION}
-      - --platform
-      - managed
-      - --allow-unauthenticated
-      - --service-account
-      - ${_CONNECTORS_SA}
-
-  - id: "Compile training pipeline"
-    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
-    entrypoint: "bash"
-    args:
-    - "-c"
-    - |
-      pip install kfp google-cloud-pipeline-components
-      python model_pipeline/train_pipeline.py
+      - "${_CONNECTORS_SA}"
+      - --set-env-vars
+      - "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},PUBSUB_TOPIC=market.uniswap.raw,PAIR_ID=${_UNISWAP_PAIR_ID}"
 
 images:
-  - ${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}
-  - ${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}
-  - ${_ARTIFACT_REGISTRY_HOST}/feature-pipeline:${SHORT_SHA}
-  - ${_ARTIFACT_REGISTRY_HOST}/retraining-trigger:${SHORT_SHA}
-  - ${_ARTIFACT_REGISTRY_HOST}/trainer:${SHORT_SHA}
+  - "${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}"
+  - "${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}"
 
 substitutions:
   _ARTIFACT_REGISTRY_HOST: "us-central1-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}"
-  _ARTIFACT_REPO: "${_ARTIFACT_REPOSITORY}"
+  _ARTIFACT_REPO: "ai-trading-artifacts" # Default repo name
   _REGION: "us-central1"
-  _CONNECTORS_SA: "connectors-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-  _DATAFLOW_BUCKET: "${PROJECT_ID}-dataflow-templates"
+  _CONNECTORS_SA: "connectors-sa@${PROJECT_ID}.iam.gserviceaccount.com" # Assumes a service account is created
+  _BINANCE_INSTRUMENT: "btcusdt"
+  _UNISWAP_PAIR_ID: "0xcbcdf9626bc03e24f779434178a73a0b4bad62ed" # WBTC-WETH 0.3%
+
+options:
+  logging: CLOUD_LOGGING_ONLY
