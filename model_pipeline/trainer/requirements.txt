@@ -1,0 +1,5 @@
+tensorflow
+google-cloud-bigquery
+pandas
+scikit-learn
+gcsfs

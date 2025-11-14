@@ -1,2 +1,2 @@
 google-cloud-pubsub
-web3
+requests

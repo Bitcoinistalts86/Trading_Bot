@@ -1,0 +1,17 @@
+fastapi
+uvicorn
+httpx
+redis
+pydantic
+google-cloud-pubsub
+google-cloud-bigquery
+google-cloud-secret-manager
+python-jose[cryptography]
+
+# Observability
+opentelemetry-sdk
+opentelemetry-exporter-cloud-trace
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-httpx
+httpx-retry
+pybreaker

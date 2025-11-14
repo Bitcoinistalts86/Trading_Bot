@@ -1,0 +1,15 @@
+# execution_engine/requirements.txt
+fastapi
+uvicorn
+google-cloud-pubsub-lite
+google-cloud-bigquery
+redis
+httpx
+pydantic
+
+# Observability
+opentelemetry-sdk
+opentelemetry-exporter-cloud-trace
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-httpx
+pybreaker
