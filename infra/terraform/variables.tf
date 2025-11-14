@@ -19,7 +19,7 @@ variable "artifact_registry" {
 
 variable "pubsub_topics" {
   type    = list(string)
-  default = ["market.binance.raw", "market.uniswap.raw"]
+  default = ["market.binance.raw", "market.uniswap.raw", "features.raw", "features.realtime", "features.dead_letter"]
 }
 
 variable "dataflow_region" {

@@ -1,4 +1,4 @@
-# Cloud Build pipeline: build connector images and deploy to Cloud Run
+# Cloud Build pipeline: build connector images, deploy to Cloud Run, and run Dataflow job
 steps:
   # --- Binance Connector ---
   - id: "Build binance connector"
@@ -54,17 +54,55 @@ steps:
       - --set-env-vars
       - "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},PUBSUB_TOPIC=market.uniswap.raw,PAIR_ID=${_UNISWAP_PAIR_ID}"
 
+  # --- Dataflow Feature Engine ---
+  - id: "Build Dataflow Template"
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "bash"
+    args:
+    - "-c"
+    - |
+      python -m pip install apache-beam[gcp] numpy python-dateutil
+      python data_pipeline/feature_engine/main.py \
+        --runner DataflowRunner \
+        --project ${PROJECT_ID} \
+        --region ${_DATAFLOW_REGION} \
+        --temp_location gs://${_DATAFLOW_BUCKET}/temp \
+        --template_location gs://${_DATAFLOW_BUCKET}/templates/feature_engine \
+        --service_account_email ${_DATAFLOW_SA_EMAIL} \
+        --input_subscription_binance "projects/${PROJECT_ID}/subscriptions/dataflow-market-binance-raw-sub" \
+        --input_subscription_uniswap "projects/${PROJECT_ID}/subscriptions/dataflow-market-uniswap-raw-sub" \
+        --output_topic "projects/${PROJECT_ID}/topics/features.realtime" \
+        --output_table "${PROJECT_ID}:features.features_intraday" \
+        --dead_letter_topic "projects/${PROJECT_ID}/topics/features.dead_letter"
+
+  - id: "Launch Dataflow Job"
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "gcloud"
+    args:
+    - dataflow
+    - jobs
+    - run
+    - "feature-engine-main" # Fixed job name for idempotent deployments
+    - --gcs-location=gs://${_DATAFLOW_BUCKET}/templates/feature_engine
+    - --region=${_DATAFLOW_REGION}
+    - --service-account-email=${_DATAFLOW_SA_EMAIL}
+    - --update # This flag updates the job if it exists, or creates it if it doesn't
+    - --parameters=input_subscription_binance=projects/${PROJECT_ID}/subscriptions/dataflow-market-binance-raw-sub,input_subscription_uniswap=projects/${PROJECT_ID}/subscriptions/dataflow-market-uniswap-raw-sub,output_topic=projects/${PROJECT_ID}/topics/features.realtime,output_table=${PROJECT_ID}:features.features_intraday,dead_letter_topic=projects/${PROJECT_ID}/topics/features.dead_letter
+
 images:
   - "${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}"
   - "${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}"
 
 substitutions:
   _ARTIFACT_REGISTRY_HOST: "us-central1-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}"
-  _ARTIFACT_REPO: "ai-trading-artifacts" # Default repo name
+  _ARTIFACT_REPO: "ai-trading-artifacts"
   _REGION: "us-central1"
-  _CONNECTORS_SA: "connectors-sa@${PROJECT_ID}.iam.gserviceaccount.com" # Assumes a service account is created
+  _DATAFLOW_REGION: "us-central1" # Specify a separate region for dataflow if needed
+  _CONNECTORS_SA: "connectors-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+  _DATAFLOW_SA_EMAIL: "dataflow-feature-engine-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+  _DATAFLOW_BUCKET: "${PROJECT_ID}-dataflow-templates"
   _BINANCE_INSTRUMENT: "btcusdt"
-  _UNISWAP_PAIR_ID: "0xcbcdf9626bc03e24f779434178a73a0b4bad62ed" # WBTC-WETH 0.3%
+  _UNISWAP_PAIR_ID: "0xcbcdf9626bc03e24f779434178a73a0b4bad62ed"
 
 options:
   logging: CLOUD_LOGGING_ONLY
