@@ -120,6 +120,31 @@ steps:
       - --service-account
       - "${_VERTEX_SA_EMAIL}"
 
+  # --- Execution Engine ---
+  - id: "Build execution engine image"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/execution-engine:${SHORT_SHA}", "execution_engine"]
+  - id: "Push execution engine image"
+    name: "gcr.io/cloud-builders/docker"
+    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/execution-engine:${SHORT_SHA}"]
+  - id: "Deploy execution engine to Cloud Run"
+    name: "gcr.io/cloud-builders/gcloud"
+    args:
+      - run
+      - deploy
+      - execution-engine
+      - --image
+      - "${_ARTIFACT_REGISTRY_HOST}/execution-engine:${SHORT_SHA}"
+      - --region
+      - "${_REGION}"
+      - --platform
+      - managed
+      - --no-allow-unauthenticated
+      - --service-account
+      - "${_EXECUTION_SA_EMAIL}"
+      - --set-env-vars
+      - "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},REGION=${_REGION},REDIS_HOST=${_REDIS_HOST},MODEL_GATEWAY_URL=${_MODEL_GATEWAY_URL},SIGNAL_SUBSCRIPTION=projects/${PROJECT_ID}/subscriptions/signals.strategy,BQ_TABLE_ID=${PROJECT_ID}:features.trade_logs"
+
   # --- Vertex AI Pipeline ---
   - id: "Compile and Submit Vertex AI Pipeline"
     name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
@@ -142,6 +167,7 @@ images:
   - "${_ARTIFACT_REGISTRY_HOST}/trainer:${SHORT_SHA}"
   - "${_ARTIFACT_REGISTRY_HOST}/model-gateway:latest"
   - "${_ARTIFACT_REGISTRY_HOST}/retraining-trigger:${SHORT_SHA}"
+  - "${_ARTIFACT_REGISTRY_HOST}/execution-engine:${SHORT_SHA}"
 
 substitutions:
   _ARTIFACT_REGISTRY_HOST: "us-central1-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}"
@@ -154,6 +180,9 @@ substitutions:
   _MODELS_BUCKET: "${PROJECT_ID}-models"
   _BINANCE_INSTRUMENT: "btcusdt"
   _UNISWAP_PAIR_ID: "0xcbcdf9626bc03e24f779434178a73a0b4bad62ed"
+  _EXECUTION_SA_EMAIL: "execution-engine-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+  _REDIS_HOST: "your-redis-host" # This needs to be manually updated after Redis is created
+  _MODEL_GATEWAY_URL: "https://model-gateway-your-url.a.run.app" # Update with the gateway URL
 
 options:
   logging: CLOUD_LOGGING_ONLY

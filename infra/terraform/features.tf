@@ -28,3 +28,29 @@ EOF
     field = "timestamp"
   }
 }
+
+# --- BigQuery Table for Trade Logs ---
+resource "google_bigquery_table" "trade_logs" {
+  dataset_id = google_bigquery_dataset.features.dataset_id
+  table_id   = "trade_logs"
+
+  schema = <<EOF
+[
+  {"name": "trade_id", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "strategy", "type": "STRING", "mode": "NULLABLE"},
+  {"name": "instrument", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "timestamp", "type": "TIMESTAMP", "mode": "REQUIRED"},
+  {"name": "side", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "quantity", "type": "FLOAT", "mode": "REQUIRED"},
+  {"name": "price", "type": "FLOAT", "mode": "REQUIRED"},
+  {"name": "execution_status", "type": "STRING", "mode": "REQUIRED"},
+  {"name": "prediction_id", "type": "STRING", "mode": "NULLABLE"},
+  {"name": "risk_flag", "type": "STRING", "mode": "NULLABLE"}
+]
+EOF
+
+  time_partitioning {
+    type = "DAY"
+    field = "timestamp"
+  }
+}

@@ -1,0 +1,8 @@
+# execution_engine/requirements.txt
+fastapi
+uvicorn
+google-cloud-pubsub-lite
+google-cloud-bigquery
+redis
+httpx
+pydantic
