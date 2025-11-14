@@ -1,4 +1,4 @@
-# execution_engine/Dockerfile
+# api_gateway/Dockerfile
 FROM python:3.9-slim
 
 WORKDIR /app

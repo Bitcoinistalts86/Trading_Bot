@@ -1,0 +1,13 @@
+# api_gateway/requirements.txt
+fastapi
+uvicorn
+google-cloud-pubsub
+google-cloud-secret-manager
+python-jose[cryptography]
+websockets
+pydantic
+httpx
+
+# This assumes the shared library is packaged and installable
+# For this project, we'll add it as a local path dependency in the Dockerfile
+# redis-state @ file:../libraries/state
