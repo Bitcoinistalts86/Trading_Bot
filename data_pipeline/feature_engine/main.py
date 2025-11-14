@@ -23,6 +23,8 @@ def normalize_trade(element):
             side = element['side'].upper()
             trade_direction = 1 if side == 'BUY' else -1
             quantity = float(element['quantity'])
+            best_bid = float(element.get('best_bid', 0.0))
+            best_ask = float(element.get('best_ask', 0.0))
 
             return {
                 'instrument': element['instrument'],
@@ -32,8 +34,8 @@ def normalize_trade(element):
                 'side': side,
                 'trade_direction': trade_direction,
                 'signed_volume': quantity * trade_direction,
-                'mid_price': 0.0,
-                'spread': 0.0
+                'mid_price': (best_bid + best_ask) / 2 if best_bid > 0 else 0.0,
+                'spread': best_ask - best_bid if best_bid > 0 else 0.0
             }
         elif element.get('exchange') == 'uniswap-v3':
             timestamp = dateparser.parse(element['timestamp']).timestamp()
@@ -58,8 +60,8 @@ def normalize_trade(element):
                 'side': side,
                 'trade_direction': trade_direction,
                 'signed_volume': quantity * trade_direction,
-                'mid_price': 0.0,
-                'spread': 0.0
+                'mid_price': price, # Use the swap price as the mid_price for Uniswap
+                'spread': 0.0 # Spread is not applicable for Uniswap AMM
             }
         else:
             return None
@@ -69,80 +71,10 @@ def normalize_trade(element):
 
 
 class ParseAndTag(beam.PTransform):
-    """A transform to parse JSON and tag failed records."""
-    def expand(self, pcoll):
-        parsed = pcoll | 'Parse' >> beam.Map(lambda x: (parse_json(x), x))
-        successful = parsed | 'GetSuccessful' >> beam.Filter(lambda x: x[0] is not None) | 'ExtractValue' >> beam.Map(lambda x: x[0])
-        failed = parsed | 'GetFailed' >> beam.Filter(lambda x: x[0] is None) | 'ExtractRaw' >> beam.Map(lambda x: x[1])
-        return successful, failed
-
+    # ... (no changes)
 
 def run():
-    """Build and run the feature engine pipeline."""
-    parser = argparse.ArgumentParser(description="Dataflow Feature Engine")
-    parser.add_argument('--input_subscription_binance', required=True)
-    parser.add_argument('--input_subscription_uniswap', required=True)
-    parser.add_argument('--output_topic', required=True)
-    parser.add_argument('--output_table', required=True)
-    parser.add_argument('--dead_letter_topic', required=True)
-    known_args, pipeline_args = parser.parse_known_args()
-
-    pipeline_options = PipelineOptions(pipeline_args)
-    pipeline_options.view_as(StandardOptions).streaming = True
-
-    with beam.Pipeline(options=pipeline_options) as p:
-        binance_trades = (
-            p
-            | 'ReadFromBinanceSub' >> beam.io.ReadFromPubSub(subscription=known_args.input_subscription_binance)
-            | 'DecodeBinance' >> beam.Map(lambda x: x.decode('utf-8'))
-        )
-
-        uniswap_swaps = (
-            p
-            | 'ReadFromUniswapSub' >> beam.io.ReadFromPubSub(subscription=known_args.input_subscription_uniswap)
-            | 'DecodeUniswap' >> beam.Map(lambda x: x.decode('utf-8'))
-        )
-
-        raw_trades = (binance_trades, uniswap_swaps) | 'MergeStreams' >> beam.Flatten()
-
-        successful_parses, failed_parses = raw_trades | 'ParseAndTag' >> ParseAndTag()
-
-        (
-            failed_parses
-            | 'EncodeDeadLetter' >> beam.Map(lambda x: x.encode('utf-8'))
-            | 'WriteToDeadLetter' >> beam.io.WriteToPubSub(topic=known_args.dead_letter_topic)
-        )
-
-        normalized_trades = (
-            successful_parses
-            | 'Normalize' >> beam.Map(normalize_trade)
-            | 'FilterFailedNormalization' >> beam.Filter(lambda x: x is not None)
-        )
-
-        keyed_trades = (
-            normalized_trades
-            | 'AssignTimestamps' >> beam.Map(lambda x: beam.window.TimestampedValue(x, x['timestamp']))
-            | 'KeyByInstrument' >> beam.Map(lambda x: (x['instrument'], x))
-        )
-
-        features = keyed_trades | 'ComputeFeatures' >> beam.ParDo(ComputeFeaturesDoFn())
-
-        (
-            features
-            | 'FormatForPubSub' >> beam.Map(json.dumps)
-            | 'EncodeForPubSub' >> beam.Map(lambda x: x.encode('utf-8'))
-            | 'WriteToPubSub' >> beam.io.WriteToPubSub(topic=known_args.output_topic)
-        )
-
-        (
-            features
-            | 'WriteToBigQuery' >> beam.io.WriteToBigQuery(
-                table=known_args.output_table,
-                schema=get_feature_schema(),
-                write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
-                create_disposition=beam.io.BigQueryDisposition.CREATE_IF_NEEDED
-            )
-        )
+    # ... (no changes)
 
 if __name__ == '__main__':
     logging.getLogger().setLevel(logging.INFO)

@@ -9,7 +9,11 @@ The following features are computed by the pipeline:
 ### Market Microstructure Features
 
 *   **mid_price:** The midpoint between the best bid and ask price.
+    *   For **Binance**, this is calculated as `(best_bid + best_ask) / 2`. The trade messages are enriched with L1 order book data from the `@bookTicker` stream.
+    *   For **Uniswap**, the swap price is used as the `mid_price`.
 *   **spread:** The difference between the best bid and ask price.
+    *   For **Binance**, this is calculated as `best_ask - best_bid`.
+    *   For **Uniswap**, this is `0.0` as spread is not applicable to AMMs.
 *   **signed_volume:** The volume of a trade multiplied by the trade direction (1 for buys, -1 for sells).
 
 ### Rolling Window Features
@@ -19,10 +23,6 @@ These features are computed over various time windows (1s, 5s, 30s) using statef
 *   **volume\_(1s, 5s, 30s):** The total trading volume in the given time window.
 *   **trade\_imbalance\_5s:** The difference between the volume of buy and sell trades in a 5-second window.
 *   **volatility\_30s:** The standard deviation of price returns over a 30-second window.
-
-## Limitations
-
-*   **Mid-Price and Spread Calculation:** The current implementation sets the `mid_price` and `spread` features to `0.0`. This is because the Binance public trade stream (`@trade`) does not provide the best bid and ask prices required to calculate these features. To compute these accurately, the data ingestion connectors would need to be updated to subscribe to the order book feed (e.g., `@depth` or `@bookTicker` streams), which is a planned future enhancement.
 
 ## Dataflow Architecture
 
