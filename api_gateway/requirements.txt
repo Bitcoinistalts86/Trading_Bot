@@ -8,6 +8,14 @@ websockets
 pydantic
 httpx
 
+# Observability
+opentelemetry-sdk
+opentelemetry-exporter-cloud-trace
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-httpx
+httpx-retry
+pybreaker
+
 # This assumes the shared library is packaged and installable
 # For this project, we'll add it as a local path dependency in the Dockerfile
 # redis-state @ file:../libraries/state

@@ -12,15 +12,6 @@ class RedisStateClient:
         self.client = redis.Redis(host=host, port=port, decode_responses=True)
         logging.info(f"Redis client initialized for host {host}:{port}")
 
-    async def is_killswitch_active(self) -> bool:
-        """Checks if the global kill-switch is active."""
-        return await self.client.get("killswitch.enabled") == "true"
-
-    async def set_killswitch(self, active: bool):
-        """Sets the state of the global kill-switch."""
-        await self.client.set("killswitch.enabled", "true" if active else "false")
-        logging.warning(f"Global kill-switch has been set to {active}")
-
     async def record_latency(self, exchange: str, latency_ms: float):
         """Records a latency measurement for a given exchange."""
         key = f"latency_metrics:{exchange}"
