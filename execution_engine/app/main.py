@@ -33,6 +33,7 @@ class TradeSignal(BaseModel):
     instrument: str
     side: str
     quantity: float
+    user_id: str
     correlation_id: str = None
 
 # ... (rest of pydantic models and other functions are the same)
@@ -47,21 +48,20 @@ async def process_signal(signal: TradeSignal):
         "trade_id": trade_id, "strategy": "baseline_v1", "instrument": signal.instrument,
         "timestamp": datetime.now(timezone.utc).isoformat(), "side": "PENDING", "quantity": 0.0,
         "price": 0.0, "execution_status": "RECEIVED", "prediction_id": None, "risk_flag": None,
-        "correlation_id": signal.correlation_id
+        "correlation_id": signal.correlation_id, "user_id": signal.user_id
     }
 
     try:
-        # 1. Check Global Kill-Switch using the shared client
-        if await kill_switch_client.is_hard_kill_active():
+        # 1. Check Kill-Switch for user and globally
+        if await kill_switch_client.is_hard_kill_active(signal.user_id):
             logging.critical("HARD kill-switch active. Halting signal processing.")
-            # By raising an exception, we ensure the message is not ACK'd and will be redelivered.
             raise HTTPException(status_code=503, detail="HARD kill-switch is active.")
 
-        if await kill_switch_client.is_soft_kill_active():
+        if await kill_switch_client.is_soft_kill_active(signal.user_id):
             log_entry["execution_status"] = "REJECTED"
-            log_entry["risk_flag"] = "GLOBAL_KILL_SWITCH"
+            log_entry["risk_flag"] = "USER_OR_GLOBAL_KILL_SWITCH"
             await log_trade(log_entry)
-            logging.warning("Global kill-switch is active. Order rejected.")
+            logging.warning("User or global kill-switch is active. Order rejected.")
             return
 
         # 2. Get Prediction from Model Gateway

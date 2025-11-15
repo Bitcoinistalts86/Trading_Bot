@@ -11,7 +11,7 @@ import pybreaker
 
 from .websocket_router import ConnectionManager, broadcast_to_clients
 from .pubsub_consumer import start_pubsub_listener
-from .auth import get_current_user
+from ..libraries.auth import get_current_user, TokenData
 from ..libraries.state.redis_state import get_redis_client, RedisStateClient
 from ..libraries.state.kill_switch import get_kill_switch_client, KillSwitchClient, KillSwitchLevel
 from ..libraries.observability import init_observability
@@ -45,12 +45,12 @@ async def shutdown_event():
 
 # --- WebSockets ---
 @app.websocket("/ws/features")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: str = Depends(get_current_user)):
     """WebSocket endpoint for streaming real-time features."""
     await manager.connect(websocket)
     try:
         while True:
-            if await kill_switch_client.is_hard_kill_active():
+            if await kill_switch_client.is_hard_kill_active(token.user_id):
                 logging.warning("HARD kill-switch active. Closing WebSocket connection.")
                 await websocket.close(code=status.WS_1012_SERVICE_RESTART)
                 manager.disconnect(websocket)
@@ -63,12 +63,12 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # --- REST Endpoints ---
 @app.post("/api/order")
-async def place_order(order: dict, current_user: dict = Depends(get_current_user)):
+async def place_order(order: dict, current_user: TokenData = Depends(get_current_user)):
     """
     Places an order by forwarding the request to the execution engine.
     (This is a simplified passthrough for now).
     """
-    if await kill_switch_client.is_soft_kill_active():
+    if await kill_switch_client.is_soft_kill_active(current_user.user_id):
         raise HTTPException(status_code=503, detail="Service is temporarily unavailable due to kill-switch activation.")
 
     if not EXECUTION_ENGINE_URL:
@@ -82,8 +82,12 @@ async def place_order(order: dict, current_user: dict = Depends(get_current_user
             backoff_factor=2,
             status_forcelist=[500, 502, 503, 504],
         )
+        # Add user_id to the order payload
+        order_payload = order.copy()
+        order_payload["user_id"] = current_user.user_id
+
         async with httpx.AsyncClient(transport=transport) as client:
-            response = await client.post(f"{EXECUTION_ENGINE_URL}/order", json=order)
+            response = await client.post(f"{EXECUTION_ENGINE_URL}/order", json=order_payload)
             response.raise_for_status()
             return response.json()
 
@@ -93,15 +97,15 @@ async def place_order(order: dict, current_user: dict = Depends(get_current_user
         raise HTTPException(status_code=503, detail="Execution engine is currently unavailable.")
 
 @app.get("/api/killswitch")
-async def get_killswitch_status(current_user: dict = Depends(get_current_user)):
-    """Gets the current state of the global kill-switch from Redis."""
-    level = await kill_switch_client.get_level()
+async def get_killswitch_status(current_user: TokenData = Depends(get_current_user)):
+    """Gets the current state of the user's kill-switch from Redis."""
+    level = await kill_switch_client.get_user_level(current_user.user_id)
     return {"kill_switch_level": level.value}
 
 @app.post("/api/killswitch")
-async def set_killswitch_status(level: KillSwitchLevel, current_user: dict = Depends(get_current_user)):
-    """Sets the state of the global kill-switch in Redis."""
-    await kill_switch_client.set_level(level)
+async def set_killswitch_status(level: KillSwitchLevel, current_user: TokenData = Depends(get_current_user)):
+    """Sets the state of the user's kill-switch in Redis."""
+    await kill_switch_client.set_user_level(current_user.user_id, level)
     return {"status": "ok", "kill_switch_level": level.value}
 
 @app.get("/health")
