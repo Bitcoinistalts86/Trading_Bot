@@ -19,9 +19,16 @@ class RedisStateClient:
         # Trim the list to keep only the last 100 measurements
         await self.client.ltrim(key, 0, 99)
 
-    # Add other state management methods as needed, e.g.:
-    # async def throttle_order(self, instrument: str) -> bool: ...
-    # async def update_last_signal_timestamp(self, ts: float): ...
+    def _user_positions_key(self, user_id: str) -> str:
+        return f"positions:{user_id}"
+
+    async def get_user_positions(self, user_id: str) -> dict:
+        """Gets the current positions for a specific user."""
+        return await self.client.hgetall(self._user_positions_key(user_id))
+
+    async def update_user_position(self, user_id: str, instrument: str, quantity: float):
+        """Updates the position for a specific user and instrument."""
+        await self.client.hset(self._user_positions_key(user_id), instrument, quantity)
 
     async def close(self):
         """Closes the Redis connection."""

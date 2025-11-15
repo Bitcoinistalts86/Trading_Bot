@@ -3,11 +3,12 @@ import asyncio
 import logging
 import os
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from httpx_retry import RetryTransport
 from ..libraries.state.redis_state import get_redis_client, RedisStateClient
 from ..libraries.state.kill_switch import get_kill_switch_client, KillSwitchClient, KillSwitchLevel
 from ..libraries.observability import init_observability
+from ..libraries.auth import get_current_admin_user, TokenData
 
 # --- Configuration ---
 API_GATEWAY_URL = os.environ.get("API_GATEWAY_URL")
@@ -70,12 +71,12 @@ async def monitor_services():
         is_api_gateway_ok = await check_service_health("api_gateway", services_to_monitor["api_gateway"])
         if not is_api_gateway_ok:
             logging.error("API Gateway is down! Activating HARD kill-switch.")
-            await kill_switch_client.set_level(KillSwitchLevel.HARD)
+            await kill_switch_client.set_global_level(KillSwitchLevel.HARD)
 
         is_execution_engine_ok = await check_service_health("execution_engine", services_to_monitor["execution_engine"])
         if not is_execution_engine_ok:
             logging.error("Execution Engine is down! Activating SOFT kill-switch.")
-            await kill_switch_client.set_level(KillSwitchLevel.SOFT)
+            await kill_switch_client.set_global_level(KillSwitchLevel.SOFT)
 
         await asyncio.sleep(60)
 
@@ -84,22 +85,22 @@ async def monitor_services():
 def health_check():
     return {"status": "ok"}
 
-@app.get("/health/full")
+@app.get("/health/full", dependencies=[Depends(get_current_admin_user)])
 async def full_health_check():
     """Returns the health status of all monitored services."""
     return service_health_status
 
-@app.post("/orchestrator/restart/{service_name}")
+@app.post("/orchestrator/restart/{service_name}", dependencies=[Depends(get_current_admin_user)])
 async def restart_service(service_name: str):
     """(Placeholder) Triggers a restart of a given service."""
     # In a real K8s/Cloud Run setup, this would interact with the platform API
     logging.info(f"Restart requested for service: {service_name}")
     return {"status": "not_implemented", "service": service_name}
 
-@app.get("/orchestrator/state")
+@app.get("/orchestrator/state", dependencies=[Depends(get_current_admin_user)])
 async def get_orchestrator_state():
     """Returns the current state of the orchestrator and the system."""
-    kill_switch_level = await kill_switch_client.get_level()
+    kill_switch_level = await kill_switch_client.get_global_level()
     return {
         "kill_switch_level": kill_switch_level.value,
         "monitored_services": {
