@@ -1,127 +1,28 @@
-# Comprehensive Cloud Build Pipeline for AI Trading Platform
-
 steps:
-  # --- MILESTONE 1: DATA CONNECTORS ---
-  - id: "Build Binance Connector"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}", "connectors/binance-connector"]
-  - id: "Push Binance Connector"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}"]
-  - id: "Deploy Binance Connector"
-    name: "gcr.io/cloud-builders/gcloud"
-    args: ["run", "deploy", "binance-connector", "--image", "${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}", "--region", "${_REGION}", "--platform", "managed", "--no-allow-unauthenticated", "--service-account", "${_CONNECTORS_SA}"]
+  - name: gcr.io/cloud-builders/docker
+    args: [
+      "build",
+      "-t",
+      "$REGION-docker.pkg.dev/$PROJECT_ID/portfolio/portfolio_engine:$COMMIT_SHA",
+      "./portfolio_engine"
+    ]
 
-  - id: "Build Uniswap Connector"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}", "connectors/uniswap-connector"]
-  - id: "Push Uniswap Connector"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}"]
-  - id: "Deploy Uniswap Connector"
-    name: "gcr.io/cloud-builders/gcloud"
-    args: ["run", "deploy", "uniswap-connector", "--image", "${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}", "--region", "${_REGION}", "--platform", "managed", "--no-allow-unauthenticated", "--service-account", "${_CONNECTORS_SA}"]
+  - name: gcr.io/cloud-builders/docker
+    args: [
+      "push",
+      "$REGION-docker.pkg.dev/$PROJECT_ID/portfolio/portfolio_engine:$COMMIT_SHA"
+    ]
 
-  # --- MILESTONE 2: DATAFLOW FEATURE PIPELINE ---
-  - id: "Build Dataflow Template"
-    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
-    entrypoint: "bash"
-    args:
-    - "-c"
-    - |
-      pip install apache-beam[gcp] numpy python-dateutil
-      python data_pipeline/feature_engine/main.py --runner DataflowRunner --project ${PROJECT_ID} --region ${_DATAFLOW_REGION} --temp_location gs://${_DATAFLOW_BUCKET}/temp --template_location gs://${_DATAFLOW_BUCKET}/templates/feature_engine --service_account_email ${_DATAFLOW_SA_EMAIL} --input_subscription_binance "projects/${PROJECT_ID}/subscriptions/dataflow-market-binance-raw-sub" --input_subscription_uniswap "projects/${PROJECT_ID}/subscriptions/dataflow-market-uniswap-raw-sub" --output_topic "projects/${PROJECT_ID}/topics/features.realtime" --output_table "${PROJECT_ID}:features.features_intraday" --dead_letter_topic "projects/${PROJECT_ID}/topics/features.dead_letter"
-  - id: "Launch Dataflow Job"
-    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
-    entrypoint: "gcloud"
-    args: ["dataflow", "jobs", "run", "feature-engine-main", "--gcs-location=gs://${_DATAFLOW_BUCKET}/templates/feature_engine", "--region=${_DATAFLOW_REGION}", "--service-account-email=${_DATAFLOW_SA_EMAIL}", "--update", "--parameters=input_subscription_binance=projects/${PROJECT_ID}/subscriptions/dataflow-market-binance-raw-sub,input_subscription_uniswap=projects/${PROJECT_ID}/subscriptions/dataflow-market-uniswap-raw-sub,output_topic=projects/${PROJECT_ID}/topics/features.realtime,output_table=${PROJECT_ID}:features.features_intraday,dead_letter_topic=projects/${PROJECT_ID}/topics/features.dead_letter"]
-
-  # --- MILESTONE 3: ML LIFECYCLE ---
-  - id: "Build Trainer Image"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/trainer:${SHORT_SHA}", "model_pipeline/trainer"]
-  - id: "Push Trainer Image"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/trainer:${SHORT_SHA}"]
-  - id: "Build and Push Model Gateway Image"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/model-gateway:latest", "model_gateway", "&&", "docker", "push", "${_ARTIFACT_REGISTRY_HOST}/model-gateway:latest"]
-  - id: "Build Retraining Trigger"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/retraining-trigger:${SHORT_SHA}", "retraining_trigger"]
-  - id: "Push Retraining Trigger"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/retraining-trigger:${SHORT_SHA}"]
-  - id: "Deploy Retraining Trigger"
-    name: "gcr.io/cloud-builders/gcloud"
-    args: ["run", "deploy", "retraining-trigger", "--image", "${_ARTIFACT_REGISTRY_HOST}/retraining-trigger:${SHORT_SHA}", "--region", "${_REGION}", "--platform", "managed", "--no-allow-unauthenticated", "--service-account", "${_VERTEX_SA_EMAIL}"]
-  - id: "Compile and Submit Vertex AI Pipeline"
-    name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
-    entrypoint: "bash"
-    args:
-    - "-c"
-    - |
-      pip install kfp google-cloud-aiplatform google-cloud-pipeline-components
-      python model_pipeline/pipelines/train_pipeline.py
-      gcloud ai pipelines run "price-prediction-train-pipeline-${SHORT_SHA}" --region ${_REGION} --service-account ${_VERTEX_SA_EMAIL} --pipeline-root "gs://${_MODELS_BUCKET}/pipeline_root" --template-path train_pipeline.json --parameter-values project=${PROJECT_ID},region=${_REGION},display_name="price-prediction-model",gcs_output_path="gs://${_MODELS_BUCKET}",training_container_uri="${_ARTIFACT_REGISTRY_HOST}/trainer:${SHORT_SHA}",table_name="features.features_intraday"
-
-  # --- MILESTONE 4: EXECUTION ENGINE ---
-  - id: "Build Execution Engine"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/execution-engine:${SHORT_SHA}", "execution_engine"]
-  - id: "Push Execution Engine"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/execution-engine:${SHORT_SHA}"]
-  - id: "Deploy Execution Engine"
-    name: "gcr.io/cloud-builders/gcloud"
-    args: ["run", "deploy", "execution-engine", "--image", "${_ARTIFACT_REGISTRY_HOST}/execution-engine:${SHORT_SHA}", "--region", "${_REGION}", "--platform", "managed", "--no-allow-unauthenticated", "--service-account", "${_EXECUTION_SA_EMAIL}", "--set-env-vars", "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},REGION=${_REGION},REDIS_HOST=${_REDIS_HOST},MODEL_GATEWAY_URL=${_MODEL_GATEWAY_URL},SIGNAL_SUBSCRIPTION=projects/${PROJECT_ID}/subscriptions/signals.strategy,BQ_TABLE_ID=${PROJECT_ID}:features.trade_logs"]
-
-  # --- MILESTONE 5: API GATEWAY & FRONTEND ---
-  - id: "Build API Gateway"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/api-gateway:${SHORT_SHA}", "api_gateway"]
-  - id: "Push API Gateway"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/api-gateway:${SHORT_SHA}"]
-  - id: "Deploy API Gateway"
-    name: "gcr.io/cloud-builders/gcloud"
-    args: ["run", "deploy", "api-gateway", "--image", "${_ARTIFACT_REGISTRY_HOST}/api-gateway:${SHORT_SHA}", "--region", "${_REGION}", "--platform", "managed", "--allow-unauthenticated", "--service-account", "${_API_GATEWAY_SA_EMAIL}", "--set-env-vars", "GOOGLE_CLOUD_PROJECT=${PROJECT_ID},REDIS_HOST=${_REDIS_HOST},FEATURES_SUBSCRIPTION_ID=features-realtime-sub,EXECUTION_ENGINE_URL=${_EXECUTION_ENGINE_URL}"]
-  - id: "Build Frontend"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["build", "-t", "${_ARTIFACT_REGISTRY_HOST}/frontend:${SHORT_SHA}", "--build-arg", "NEXT_PUBLIC_WEBSOCKET_URL=${_WEBSOCKET_URL}", "frontend"]
-  - id: "Push Frontend"
-    name: "gcr.io/cloud-builders/docker"
-    args: ["push", "${_ARTIFACT_REGISTRY_HOST}/frontend:${SHORT_SHA}"]
-  - id: "Deploy Frontend"
-    name: "gcr.io/cloud-builders/gcloud"
-    args: ["run", "deploy", "frontend", "--image", "${_ARTIFACT_REGISTRY_HOST}/frontend:${SHORT_SHA}", "--region", "${_REGION}", "--platform", "managed", "--allow-unauthenticated"]
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: gcloud
+    args: [
+      "run",
+      "deploy",
+      "portfolio-engine",
+      "--image=$REGION-docker.pkg.dev/$PROJECT_ID/portfolio/portfolio_engine:$COMMIT_SHA",
+      "--region=$REGION",
+      "--platform=managed"
+    ]
 
 images:
-  - "${_ARTIFACT_REGISTRY_HOST}/binance-connector:${SHORT_SHA}"
-  - "${_ARTIFACT_REGISTRY_HOST}/uniswap-connector:${SHORT_SHA}"
-  - "${_ARTIFACT_REGISTRY_HOST}/trainer:${SHORT_SHA}"
-  - "${_ARTIFACT_REGISTRY_HOST}/model-gateway:latest"
-  - "${_ARTIFACT_REGISTRY_HOST}/retraining-trigger:${SHORT_SHA}"
-  - "${_ARTIFACT_REGISTRY_HOST}/execution-engine:${SHORT_SHA}"
-  - "${_ARTIFACT_REGISTRY_HOST}/api-gateway:${SHORT_SHA}"
-  - "${_ARTIFACT_REGISTRY_HOST}/frontend:${SHORT_SHA}"
-
-substitutions:
-  _ARTIFACT_REGISTRY_HOST: "us-central1-docker.pkg.dev/${PROJECT_ID}/${_ARTIFACT_REPO}"
-  _ARTIFACT_REPO: "ai-trading-artifacts"
-  _REGION: "us-central1"
-  _DATAFLOW_REGION: "us-central1"
-  _CONNECTORS_SA: "connectors-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-  _DATAFLOW_SA_EMAIL: "dataflow-feature-engine-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-  _VERTEX_SA_EMAIL: "vertex-pipelines-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-  _EXECUTION_SA_EMAIL: "execution-engine-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-  _API_GATEWAY_SA_EMAIL: "api-gateway-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-  _MODELS_BUCKET: "${PROJECT_ID}-models"
-  _DATAFLOW_BUCKET: "${PROJECT_ID}-dataflow-templates"
-  _REDIS_HOST: "_CHANGE_ME_MANUALLY_AFTER_TERRAFORM_APPLY_"
-  _MODEL_GATEWAY_URL: "https://model-gateway-your-url.a.run.app"
-  _EXECUTION_ENGINE_URL: "https://execution-engine-your-url.a.run.app"
-  _WEBSOCKET_URL: "wss://api-gateway-your-url.a.run.app/ws/features"
-
-options:
-  logging: CLOUD_LOGGING_ONLY
+  - "$REGION-docker.pkg.dev/$PROJECT_ID/portfolio/portfolio_engine:$COMMIT_SHA"
