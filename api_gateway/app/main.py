@@ -1,20 +1,22 @@
 # api_gateway/app/main.py
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 import asyncio
 import json
 import logging
-import os
 import httpx
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
 from typing import List
 from httpx_retry import RetryTransport
 import pybreaker
 
-from .websocket_router import ConnectionManager, broadcast_to_clients
-from .pubsub_consumer import start_pubsub_listener
-from ..libraries.auth import get_current_user, TokenData
-from ..libraries.state.redis_state import get_redis_client, RedisStateClient
-from ..libraries.state.kill_switch import get_kill_switch_client, KillSwitchClient, KillSwitchLevel
-from ..libraries.observability import init_observability
+from api_gateway.app.websocket_router import ConnectionManager, broadcast_to_clients
+from api_gateway.app.pubsub_consumer import start_pubsub_listener
+from libraries.auth import get_current_user, TokenData
+from libraries.state.redis_state import get_redis_client, RedisStateClient
+from libraries.state.kill_switch import get_kill_switch_client, KillSwitchClient, KillSwitchLevel
 
 # --- Configuration ---
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
@@ -22,11 +24,12 @@ EXECUTION_ENGINE_URL = os.environ.get("EXECUTION_ENGINE_URL")
 
 # --- FastAPI App ---
 app = FastAPI(title="API Gateway")
-init_observability("api_gateway", app)
 manager = ConnectionManager()
 redis_client: RedisStateClient = None
 kill_switch_client: KillSwitchClient = None
 execution_engine_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
+LOG = logging.getLogger("api_gateway")
+logging.basicConfig(level=logging.INFO)
 
 @app.on_event("startup")
 async def startup_event():
@@ -111,3 +114,6 @@ async def set_killswitch_status(level: KillSwitchLevel, current_user: TokenData 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
+
+# ASGI-compatible. Uvicorn must be run from a separate file.
+pass

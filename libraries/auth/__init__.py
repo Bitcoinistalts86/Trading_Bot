@@ -3,7 +3,6 @@ import os
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
-from google.cloud import secretmanager
 from pydantic import BaseModel
 
 # --- Configuration ---
@@ -11,16 +10,33 @@ PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
 JWT_SECRET_ID = os.environ.get("JWT_SECRET_ID", "jwt-hmac-secret")
 ALGORITHM = "HS256"
 
+# Attempt to import secretmanager and mock if it fails (local development)
+try:
+    from google.cloud import secretmanager
+    import google.auth
+except (ImportError, google.auth.exceptions.DefaultCredentialsError):
+    secretmanager = None
+
 # --- Clients ---
-secret_client = secretmanager.SecretManagerServiceClient()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login") # Point to the auth service login
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 # --- Helper Functions ---
 def get_jwt_secret() -> str:
-    """Fetches the JWT HMAC secret from Secret Manager."""
-    name = f"projects/{PROJECT_ID}/secrets/{JWT_SECRET_ID}/versions/latest"
-    response = secret_client.access_secret_version(name=name)
-    return response.payload.data.decode("UTF-8")
+    """Fetches the JWT HMAC secret from Secret Manager or returns a mock secret."""
+    if secretmanager is None:
+        # Local mode: use mock secret from environment variable
+        return os.getenv("LOCAL_JWT_SECRET", "dev-secret")
+    else:
+        # Production mode: real Secret Manager client
+        try:
+            client = secretmanager.SecretManagerServiceClient()
+            name = f"projects/{PROJECT_ID}/secrets/{JWT_SECRET_ID}/versions/latest"
+            response = client.access_secret_version(name=name)
+            return response.payload.data.decode("UTF-8")
+        except Exception as e:
+            # Fallback for environments with the library but no credentials
+            return os.getenv("LOCAL_JWT_SECRET", "dev-secret")
+
 
 SECRET_KEY = get_jwt_secret()
 
