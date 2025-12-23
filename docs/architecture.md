@@ -9,53 +9,59 @@ This diagram shows the flow of data and control from ingestion to execution and 
 ```mermaid
 graph TD
     subgraph "External Markets"
+        direction LR
+        CEX[CEXs]
+        DeX[DeXs]
+        Trad[Traditional]
+    end
+
+    subgraph "Data & Feature Pipelines"
         direction TB
-        Binance[Binance]
-        Uniswap[Uniswap]
+        Connectors[connectors]
+        Dataflow[data_pipeline/beam_feature_pipeline]
+    end
+
+    subgraph "Model Lifecycle"
+        direction TB
+        BQML[ml/bqml]
+        Training[model_pipeline]
+        Retraining[retraining_trigger]
+    end
+
+    subgraph "Trading & Execution"
+        direction TB
+        Execution[execution_engine]
     end
 
     subgraph "GCP Infrastructure"
         direction LR
 
-        subgraph "Data & Features"
-            Binance -- Trades & L1 Book --> A[Connectors (Cloud Run)]
-            Uniswap -- Swaps --> A
-            A -- Raw Data --> B(Pub/Sub: market.*)
-            B --> C[Dataflow Feature Pipeline]
-            C -- Streaming Inserts --> D((BigQuery: features_intraday))
-            C -- Real-time Features --> E(Pub/Sub: features.realtime)
-        end
-
-        subgraph "MLOps & Training"
-            D -- Training Data --> F[Vertex AI Pipeline]
-            F -- Registers --> G[Vertex AI Model Registry]
-            G -- Deploys --> H[Vertex AI Endpoint]
-            I(Pub/Sub: model.retrain.trigger) -- Triggers --> F
-            J[Retraining Trigger (Cloud Run)] -- Publishes --> I
-        end
-
-        subgraph "Serving & Execution"
-            K[API Gateway (Cloud Run)] -- HTTP Request --> L[Model Gateway (Cloud Run)]
-            L -- Prediction --> H
-            K -- WebSocket Stream --> M[Frontend (Cloud Run)]
-            E -- Pushes Features --> K
-
-            N(Pub/Sub: signals.strategy) -- Pushes Signals --> O[Execution Engine (Cloud Run)]
-            O -- Fetches Prediction --> L
-            O -- Checks Kill-Switch --> P((Redis: Shared State))
-            O -- Logs Trades --> Q((BigQuery: trade_logs))
-            O -- Simulated Orders --> S[Exchange Simulators]
-        end
-
-        subgraph "User Interface"
-             M -- User Actions --> K
-             K -- Kill-Switch Control --> P
-        end
+    subgraph "Data Stores"
+        direction TB
+        TSDB[BigQuery]
+        ModelRegistry[Vertex AI Model Registry]
     end
 
-    style A fill:#cce5ff,stroke:#333,stroke-width:2px
-    style C fill:#cce5ff,stroke:#333,stroke-width:2px
-    style F fill:#d5e8d4,stroke:#333,stroke-width:2px
-    style O fill:#ffcc99,stroke:#333,stroke-width:2px
-    style M fill:#f8cecc,stroke:#333,stroke-width:2px
+    %% Connections
+    External_Markets -- "Raw Market Data" --> Connectors
+    Connectors -- "Normalized Data (Pub/Sub)" --> Dataflow
+    Dataflow -- "Features" --> TSDB
+
+    TSDB -- "Training Data" --> BQML
+    TSDB -- "Training Data" --> Training
+    Training -- "Trained Models" --> ModelRegistry
+    ModelRegistry -- "Models" --> Execution
+
+    Retraining -- "Trigger (Pub/Sub)" --> Training
+
+    Execution -- "Trade Orders" --> Connectors
+
+    Web -- "User Actions" --> API
+    Mobile -- "User Actions" --> API
+    API -- "Commands & Queries" --> Execution
+    API -- "Commands & Queries" --> Training
+
+    Execution -- "Live P&L, Risk" --> API
+    API -- "Data" --> Web
+    API -- "Data" --> Mobile
 ```
