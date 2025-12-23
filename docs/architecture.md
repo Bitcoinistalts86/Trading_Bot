@@ -1,8 +1,10 @@
-# Architecture
+# System Architecture
 
 This document contains the architecture diagrams for the AI Trading & Arbitrage Platform.
 
 ## High-Level Architecture
+
+This diagram shows the flow of data and control from ingestion to execution and the user interface.
 
 ```mermaid
 graph TD
@@ -31,12 +33,8 @@ graph TD
         Execution[execution_engine]
     end
 
-    subgraph "User Interface"
-        direction RL
-        API[api_gateway]
-        Web[frontend]
-        Mobile[mobile]
-    end
+    subgraph "GCP Infrastructure"
+        direction LR
 
     subgraph "Data Stores"
         direction TB
