@@ -1,97 +1,105 @@
-"""A streaming feature pipeline using Apache Beam and Google Cloud Dataflow."""
+# data_pipeline/beam_feature_pipeline/main.py
 import argparse
 import json
+import logging
 from datetime import datetime
 
 import apache_beam as beam
-from apache_beam.io.gcp.bigquery import WriteToBigQuery
-from apache_beam.io.gcp.pubsub import ReadFromPubSub
-from apache_beam.options.pipeline_options import (
-    GoogleCloudOptions,
-    PipelineOptions,
-    SetupOptions,
-    StandardOptions,
-)
+from apache_beam.io.gcp.pubsub import ReadFromPubSub, WriteToPubSub
+from apache_beam.options.pipeline_options import PipelineOptions, StandardOptions, GoogleCloudOptions
+from apache_beam.transforms.combiners import MeanCombineFn
+from apache_beam.transforms.trigger import AfterWatermark, AfterProcessingTime, AfterCount, Repeatedly
 
-
-class ParseMessage(beam.DoFn):
-    """Parses the input Pub/Sub message."""
-
+class ParseAndExtract(beam.DoFn):
+    """Parses Pub/Sub messages and extracts core fields."""
     def process(self, element):
-        """Processes a single Pub/Sub message."""
-        msg = json.loads(element.decode("utf-8"))
-        # expect raw structure {exchange, instrument, ts, payload}
-        ts = msg.get("ts") or datetime.utcnow().isoformat() + "Z"
-        payload = msg.get("payload")
-        # TODO: parse payload to extract price/qty/book snapshots
+        try:
+            msg = json.loads(element.decode("utf-8"))
+            payload = msg.get("payload", {})
+
+            price = float(payload.get("p", 0))
+            qty = float(payload.get("q", 0))
+            bid = float(payload.get("b", 0))
+            ask = float(payload.get("a", 0))
+
+            yield (msg.get("instrument"), {
+                "price": price,
+                "quantity": qty,
+                "bid": bid,
+                "ask": ask,
+                "timestamp": msg.get("ts", datetime.utcnow().isoformat())
+            })
+        except Exception as e:
+            logging.error(f"Error parsing message: {e}")
+
+class ComputeWindowFeatures(beam.DoFn):
+    """Computes features over a window of elements."""
+    def process(self, element_tuple):
+        instrument, elements = element_tuple
+
+        if not elements:
+            return
+
+        prices = [e["price"] for e in elements if e["price"] > 0]
+        quantities = [e["quantity"] for e in elements]
+        bids = [e["bid"] for e in elements if e["bid"] > 0]
+        asks = [e["ask"] for e in elements if e["ask"] > 0]
+
+        # 1. VWAP (Volume-Weighted Average Price)
+        numerator = sum(p * q for p, q in zip(prices, quantities))
+        denominator = sum(quantities)
+        vwap = numerator / denominator if denominator > 0 else (prices[0] if prices else 0)
+
+        # 2. Average Spread
+        avg_spread = 0
+        if bids and asks:
+            avg_spread = sum(a - b for a, b in zip(asks, bids)) / len(bids)
+
+        # 3. Order Flow Imbalance (OFI) - Simplified
+        # Sum of bid volume vs sum of ask volume as a proxy
+        total_bid = sum(bids)
+        total_ask = sum(asks)
+        ofi = (total_bid - total_ask) / (total_bid + total_ask) if (total_bid + total_ask) > 0 else 0
+
         yield {
-            "exchange": msg.get("exchange"),
-            "instrument": msg.get("instrument"),
-            "ts": ts,
-            "payload": json.dumps(payload),
+            "instrument": instrument,
+            "ts": datetime.utcnow().isoformat(),
+            "features": {
+                "vwap": vwap,
+                "avg_spread": avg_spread,
+                "order_flow_imbalance": ofi,
+                "sample_count": len(elements)
+            }
         }
 
-
-class RollingFeatures(beam.PTransform):
-    """Computes rolling features over a window."""
-
-    def expand(self, pcoll):
-        """Applies the PTransform."""
-        # Simplified example: compute dummy features
-        return (
-            pcoll
-            | "Window" >> beam.WindowInto(beam.window.FixedWindows(5))
-            | "ComputeSimpleFeatures"
-            >> beam.Map(
-                lambda r: {
-                    "exchange": r["exchange"],
-                    "instrument": r["instrument"],
-                    "ts": r["ts"],
-                    "vwap_1s": 0.0,
-                    "vwap_5s": 0.0,
-                    "orderflow_imbalance": 0.0,
-                    "bid_ask_spread": 0.0,
-                    "payload": r["payload"],
-                }
-            )
-        )
-
-
 def run(argv=None):
-    """Runs the feature pipeline."""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--project", required=True)
-    parser.add_argument("--region", required=True)
-    parser.add_argument("--input_topic", required=True)
-    parser.add_argument("--output_table", required=True)
-    parser.add_argument("--temp_location", required=True)
-    parser.add_argument("--staging_location", required=True)
+    parser.add_argument("--input_topic", required=True, help="Pub/Sub topic to read from")
+    parser.add_argument("--output_topic", required=True, help="Pub/Sub topic to write features to")
+    parser.add_argument("--project", help="Google Cloud Project ID")
     args, pipeline_args = parser.parse_known_args(argv)
 
     options = PipelineOptions(pipeline_args)
-    google_cloud_options = options.view_as(GoogleCloudOptions)
-    google_cloud_options.project = args.project
-    google_cloud_options.region = args.region
-    google_cloud_options.staging_location = args.staging_location
-    google_cloud_options.temp_location = args.temp_location
     options.view_as(StandardOptions).streaming = True
-    options.view_as(SetupOptions).save_main_session = True
+    if args.project:
+        options.view_as(GoogleCloudOptions).project = args.project
 
     with beam.Pipeline(options=options) as p:
-        messages = (
+        (
             p
-            | "ReadFromPubSub" >> ReadFromPubSub(topic=args.input_topic).with_output_types(bytes)
-            | "Parse" >> beam.ParDo(ParseMessage())
-            | "FeatureWindow" >> RollingFeatures()
+            | "ReadFromPubSub" >> ReadFromPubSub(topic=args.input_topic)
+            | "Parse" >> beam.ParDo(ParseAndExtract())
+            | "Window" >> beam.WindowInto(
+                beam.window.SlidingWindows(size=60, period=10), # 1 minute window, every 10s
+                trigger=Repeatedly(AfterProcessingTime(10)),
+                accumulation_mode=beam.transforms.trigger.AccumulationMode.DISCARDING
+            )
+            | "GroupByKey" >> beam.GroupByKey()
+            | "ComputeFeatures" >> beam.ParDo(ComputeWindowFeatures())
+            | "FormatOutput" >> beam.Map(lambda x: json.dumps(x).encode("utf-8"))
+            | "WriteToPubSub" >> WriteToPubSub(topic=args.output_topic)
         )
-
-        messages | "WriteToBigQuery" >> WriteToBigQuery(
-            table=args.output_table,
-            custom_gcs_temp_location=args.temp_location,
-            write_disposition=beam.io.BigQueryDisposition.WRITE_APPEND,
-            create_disposition=beam.io.BigQueryDisposition.CREATE_NEVER,
-        )
-
 
 if __name__ == "__main__":
+    logging.getLogger().setLevel(logging.INFO)
     run()

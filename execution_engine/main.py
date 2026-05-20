@@ -1,135 +1,256 @@
-"""The execution engine for the AI Trading & Arbitrage Platform."""
+# execution_engine/main.py
 import os
 import uuid
+import json
+import logging
+import asyncio
+import threading
 from datetime import datetime, timezone
-from fastapi import FastAPI, BackgroundTasks
+from typing import Optional, List, Dict
+from fastapi import FastAPI, BackgroundTasks, HTTPException
 from pydantic import BaseModel
-from google.cloud import bigquery
+from google.cloud import pubsub_v1
 
-app = FastAPI()
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("execution_engine")
 
 # --- Configuration ---
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
-BIGQUERY_DATASET = "trading_ingest"
-BIGQUERY_TABLE = "trade_logs"
+PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "test-project")
+PUBSUB_EMULATOR_HOST = os.environ.get("PUBSUB_EMULATOR_HOST")
 
-# --- In-memory State (for simulation) ---
-STATE = {
-    "kill_switch_activated": False,
-    "portfolio": {"USD": 100000.0, "ETH": 0.0},
-    "open_orders": {},
-}
+if PUBSUB_EMULATOR_HOST:
+    os.environ["PUBSUB_EMULATOR_HOST"] = PUBSUB_EMULATOR_HOST
 
-# --- BigQuery Client ---
-bq_client = bigquery.Client(project=PROJECT_ID)
-
+# --- Models ---
 class Signal(BaseModel):
-    """Represents a trading signal."""
     strategy_id: str
     instrument: str
-    side: str  # "BUY" or "SELL"
+    side: str
     price_target: float
     quantity: float
-    order_type: str  # "MARKET" or "LIMIT"
-    pass
+    order_type: str # "MARKET", "LIMIT", "TWAP", "VWAP"
+    duration_seconds: Optional[int] = 60 # For TWAP/VWAP
 
-# --- Simulated Logic ---
+class Order(BaseModel):
+    instrument: str
+    side: str
+    quantity: float
+    price: Optional[float] = None
+    order_type: str # "MARKET", "LIMIT", "TWAP", "VWAP"
+    duration_seconds: Optional[int] = 60
 
-def smart_order_router(signal: Signal) -> str:
-    """Selects the best venue based on simulated liquidity and fees."""
-    print("SOR: Analyzing liquidity and fees...")
-    if signal.instrument == "ETH/USDT":
-        if signal.quantity > 10:
-            return "binance"
-        return "uniswap"
-    return "binance"
+# --- In-memory State (Simulation) ---
+STATE = {
+    "kill_switch_active": False,
+    "portfolio": {"USD": 100000.0, "ETH": 0.0},
+    "positions": [],
+    "last_price": 2500.0
+}
 
-def check_risk(signal: Signal) -> bool:
-    """Performs pre-trade risk checks."""
-    if signal.instrument == "ETH/USDT" and signal.quantity > 50:
-        print("RISK CHECK FAILED: Order quantity exceeds max position size.")
+# --- Risk Manager ---
+def check_risk(order: Order) -> bool:
+    if STATE["kill_switch_active"]:
+        logger.warning("Risk Check Failed: Kill-switch is active")
         return False
-    required_capital = signal.price_target * signal.quantity
-    if signal.side == "BUY" and STATE["portfolio"]["USD"] < required_capital:
-        print("RISK CHECK FAILED: Insufficient capital.")
+
+    price = order.price or STATE["last_price"]
+    total_value = order.quantity * price
+
+    if order.side == "BUY" and STATE["portfolio"]["USD"] < total_value:
+        logger.warning(f"Risk Check Failed: Insufficient USD balance ({STATE['portfolio']['USD']} < {total_value})")
         return False
-    print("RISK CHECK PASSED")
+
+    if order.side == "SELL" and STATE["portfolio"]["ETH"] < order.quantity:
+        logger.warning(f"Risk Check Failed: Insufficient ETH balance ({STATE['portfolio']['ETH']} < {order.quantity})")
+        return False
+
     return True
 
-def execute_on_binance(signal: Signal) -> str:
-    """Simulates placing an order on Binance."""
-    print(f"Executing on Binance: {signal.side} {signal.quantity} {signal.instrument}")
-    order_id = f"binance-{uuid.uuid4()}"
-    STATE["open_orders"][order_id] = signal
-    if signal.side == "BUY":
-        STATE["portfolio"]["USD"] -= signal.price_target * signal.quantity
-        STATE["portfolio"]["ETH"] += signal.quantity
+# --- Execution Manager ---
+async def publish_execution(order_id: str, instrument: str, side: str, quantity: float, price: float):
+    try:
+        publisher = pubsub_v1.PublisherClient()
+        topic_path = publisher.topic_path(PROJECT_ID, "market.executions")
+        data = json.dumps({
+            "order_id": order_id,
+            "instrument": instrument,
+            "side": side,
+            "quantity": quantity,
+            "price": price,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }).encode("utf-8")
+        publisher.publish(topic_path, data)
+    except Exception as e:
+        logger.warning(f"Could not publish execution: {e}")
+
+async def execute_immediate(order: Order):
+    logger.info(f"Executing Immediate {order.order_type}: {order}")
+    await asyncio.sleep(0.1) # Network latency simulation
+
+    price = order.price or STATE["last_price"]
+    total_value = order.quantity * price
+
+    if order.side == "BUY":
+        STATE["portfolio"]["USD"] -= total_value
+        STATE["portfolio"]["ETH"] += order.quantity
     else:
-        STATE["portfolio"]["USD"] += signal.price_target * signal.quantity
-        STATE["portfolio"]["ETH"] -= signal.quantity
-    return order_id
+        STATE["portfolio"]["USD"] += total_value
+        STATE["portfolio"]["ETH"] -= order.quantity
 
-def execute_on_uniswap(signal: Signal) -> str:
-    """Simulates placing an order on Uniswap."""
-    print(f"Executing on Uniswap: {signal.side} {signal.quantity} {signal.instrument}")
-    order_id = f"uniswap-{uuid.uuid4()}"
-    STATE["open_orders"][order_id] = signal
-    if signal.side == "BUY":
-        STATE["portfolio"]["USD"] -= signal.price_target * signal.quantity
-        STATE["portfolio"]["ETH"] += signal.quantity
+    STATE["last_price"] = price
+    await publish_execution(str(uuid.uuid4()), order.instrument, order.side, order.quantity, price)
+
+async def execute_twap(order: Order):
+    """Time-Weighted Average Price execution."""
+    duration = order.duration_seconds or 60
+    chunks = 10
+    interval = duration / chunks
+    qty_per_chunk = order.quantity / chunks
+
+    logger.info(f"Starting TWAP for {order.quantity} {order.instrument} over {duration}s in {chunks} chunks")
+
+    for i in range(chunks):
+        if STATE["kill_switch_active"]:
+            logger.warning("TWAP Aborted: Kill-switch activated")
+            break
+
+        # Simulated slight price variance for each chunk
+        current_price = STATE["last_price"] * (1 + (0.0001 * (i % 3 - 1)))
+
+        chunk_order = Order(
+            instrument=order.instrument,
+            side=order.side,
+            quantity=qty_per_chunk,
+            price=current_price,
+            order_type="MARKET"
+        )
+
+        # Internal immediate execution for chunk
+        total_value = qty_per_chunk * current_price
+        if order.side == "BUY":
+            STATE["portfolio"]["USD"] -= total_value
+            STATE["portfolio"]["ETH"] += qty_per_chunk
+        else:
+            STATE["portfolio"]["USD"] += total_value
+            STATE["portfolio"]["ETH"] -= qty_per_chunk
+
+        await publish_execution(f"twap-{uuid.uuid4()}", order.instrument, order.side, qty_per_chunk, current_price)
+        logger.info(f"TWAP Chunk {i+1}/{chunks} executed at {current_price}")
+
+        await asyncio.sleep(interval)
+
+async def execute_vwap(order: Order):
+    """Volume-Weighted Average Price execution (Simulated volume profile)."""
+    duration = order.duration_seconds or 60
+    chunks = 10
+    interval = duration / chunks
+
+    # Simulated volume profile: more volume at start and end of interval (U-shaped)
+    profile = [0.15, 0.1, 0.08, 0.07, 0.05, 0.05, 0.07, 0.1, 0.15, 0.18]
+
+    logger.info(f"Starting VWAP for {order.quantity} {order.instrument} over {duration}s")
+
+    for i in range(chunks):
+        if STATE["kill_switch_active"]:
+            logger.warning("VWAP Aborted: Kill-switch activated")
+            break
+
+        qty_per_chunk = order.quantity * profile[i]
+        current_price = STATE["last_price"]
+
+        total_value = qty_per_chunk * current_price
+        if order.side == "BUY":
+            STATE["portfolio"]["USD"] -= total_value
+            STATE["portfolio"]["ETH"] += qty_per_chunk
+        else:
+            STATE["portfolio"]["USD"] += total_value
+            STATE["portfolio"]["ETH"] -= qty_per_chunk
+
+        await publish_execution(f"vwap-{uuid.uuid4()}", order.instrument, order.side, qty_per_chunk, current_price)
+        logger.info(f"VWAP Chunk {i+1}/{chunks} executed {qty_per_chunk} at {current_price}")
+
+        await asyncio.sleep(interval)
+
+async def route_order(order: Order):
+    if order.order_type in ["MARKET", "LIMIT"]:
+        await execute_immediate(order)
+    elif order.order_type == "TWAP":
+        await execute_twap(order)
+    elif order.order_type == "VWAP":
+        await execute_vwap(order)
     else:
-        STATE["portfolio"]["USD"] += signal.price_target * signal.quantity
-        STATE["portfolio"]["ETH"] -= signal.quantity
-    return order_id
+        logger.error(f"Unsupported order type: {order.order_type}")
 
-def log_trade(signal: Signal, venue: str, order_id: str):
-    """Logs a trade to BigQuery."""
-    rows_to_insert = [{"strategy_id": signal.strategy_id, "instrument": signal.instrument, "side": signal.side, "price_target": signal.price_target, "quantity": signal.quantity, "order_type": signal.order_type, "venue": venue, "order_id": order_id, "timestamp": datetime.now(timezone.utc).isoformat()}]
-    errors = bq_client.insert_rows_json(f"{PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}", rows_to_insert)
-    if errors:
-        print(f"Encountered errors while inserting rows: {errors}")
+# --- Pub/Sub Subscriber for Signals ---
+def start_signal_subscriber(loop):
+    try:
+        subscriber = pubsub_v1.SubscriberClient()
+        subscription_path = f"projects/{PROJECT_ID}/subscriptions/market.signals.sub"
 
-async def process_trade(signal: Signal):
-    """The main trade processing and execution flow."""
-    if STATE["kill_switch_activated"]:
-        print("Trade rejected: Kill switch is active.")
-        return
+        def callback(message):
+            logger.info(f"Received signal from Pub/Sub: {message.data}")
+            try:
+                data = json.loads(message.data)
+                signal = Signal(**data)
+                order = Order(
+                    instrument=signal.instrument,
+                    side=signal.side,
+                    quantity=signal.quantity,
+                    price=signal.price_target,
+                    order_type=signal.order_type,
+                    duration_seconds=signal.duration_seconds
+                )
 
-    print(f"--- Processing new signal: {signal.strategy_id} ---")
-    if not check_risk(signal):
-        return
-    venue = smart_order_router(signal)
-    if venue == "binance":
-        order_id = execute_on_binance(signal)
-    elif venue == "uniswap":
-        order_id = execute_on_uniswap(signal)
+                if check_risk(order):
+                    # Schedule on the main event loop
+                    asyncio.run_coroutine_threadsafe(route_order(order), loop)
+
+                message.ack()
+            except Exception as e:
+                logger.error(f"Error processing signal: {e}")
+                message.nack()
+
+        logger.info(f"Listening for signals on {subscription_path}...")
+        streaming_pull_future = subscriber.subscribe(subscription_path, callback=callback)
+    except Exception as e:
+        logger.warning(f"Could not initialize Pub/Sub subscriber: {e}")
+
+# --- FastAPI App ---
+app = FastAPI(title="Execution Engine")
+
+@app.on_event("startup")
+async def startup_event():
+    loop = asyncio.get_running_loop()
+    # Start Pub/Sub subscriber in a separate thread
+    threading.Thread(target=start_signal_subscriber, args=(loop,), daemon=True).start()
+
+@app.post("/order")
+async def place_order(order: Order, background_tasks: BackgroundTasks):
+    if not check_risk(order):
+        raise HTTPException(status_code=400, detail="Risk check failed")
+
+    background_tasks.add_task(route_order, order)
+    return {"status": "order_accepted", "order": order}
+
+@app.post("/kill-switch")
+async def kill_switch(action: str):
+    if action == "ACTIVATE":
+        STATE["kill_switch_active"] = True
+        logger.warning("KILL-SWITCH ACTIVATED")
     else:
-        print(f"Unknown venue: {venue}")
-        return
-    log_trade(signal, venue, order_id)
-    print(f"--- Trade processed. Order ID: {order_id} ---")
-    print(f"Current Portfolio: {STATE['portfolio']}")
+        STATE["kill_switch_active"] = False
+        logger.info("KILL-SWITCH DEACTIVATED")
+    return {"status": "ok", "kill_switch_active": STATE["kill_switch_active"]}
 
-# --- API Endpoints ---
+@app.get("/positions")
+async def get_positions():
+    return {
+        "USD": STATE["portfolio"]["USD"],
+        "ETH": STATE["portfolio"]["ETH"],
+        "USD_PRICE": STATE["last_price"]
+    }
 
-@app.post("/signal")
-async def receive_signal(signal: Signal, background_tasks: BackgroundTasks):
-    """Receives a trading signal and executes the trade in the background."""
-    background_tasks.add_task(process_trade, signal)
-    return {"message": "Signal received and is being processed."}
-
-@app.post("/kill-switch/activate")
-async def activate_kill_switch():
-    """Activates the kill-switch, halting all new trades."""
-    STATE["kill_switch_activated"] = True
-    print("!!! KILL SWITCH ACTIVATED !!! All new trades will be rejected.")
-    print(f"Cancelling {len(STATE['open_orders'])} open orders...")
-    STATE["open_orders"].clear()
-    return {"message": "Kill switch activated. All new trades halted and open orders cancelled."}
-
-@app.post("/kill-switch/deactivate")
-async def deactivate_kill_switch():
-    """Deactivates the kill-switch, resuming normal trading."""
-    STATE["kill_switch_activated"] = False
-    print(">>> Kill switch deactivated. Trading resumed. <<<")
-    return {"message": "Kill switch deactivated. Trading can resume."}
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
