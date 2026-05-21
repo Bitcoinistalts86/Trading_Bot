@@ -3,17 +3,15 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# --- Install shared library ---
-# This assumes the 'libraries' directory is in the build context
-COPY ../libraries /app/libraries
-RUN pip install --no-cache-dir /app/libraries/state
-
 # --- Install app dependencies ---
-COPY requirements.txt .
+COPY api_gateway/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# --- Copy shared libraries ---
+COPY libraries/ ./libraries
+
 # --- Copy app code ---
-COPY app/ ./app
+COPY api_gateway/app/ ./api_gateway/app/
 
 # --- Run ---
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "api_gateway.app.main:app", "--host", "0.0.0.0", "--port", "8080"]
