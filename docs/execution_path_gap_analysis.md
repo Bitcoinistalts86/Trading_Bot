@@ -82,10 +82,11 @@ Decisions:
 These are deliberately **not** in this PR; they need real account context and
 careful review:
 
-1. **Exchange symbol filters.** Round price/quantity to `LOT_SIZE`,
-   `PRICE_FILTER`, and `MIN_NOTIONAL` from `GET /api/v3/exchangeInfo`. Today the
-   adapter sends raw quantities; the exchange will reject orders that violate a
-   symbol's step size.
+1. ~~**Exchange symbol filters.**~~ ✅ **Done** (PR: binance-symbol-filters).
+   `BinanceAdapter` now fetches `LOT_SIZE`/`PRICE_FILTER`/`NOTIONAL` from
+   `GET /api/v3/exchangeInfo`, floors quantity to `stepSize`, rounds price to
+   `tickSize` (Decimal-precise), and rejects sub-`minNotional` orders before
+   signing instead of letting the exchange bounce them.
 2. **Fill reconciliation via the user-data WebSocket stream.** REST responses
    can be `NEW`/partial; the source of truth for fills and balances is the
    `executionReport` stream (`listenKey`). Position state should be reconciled
