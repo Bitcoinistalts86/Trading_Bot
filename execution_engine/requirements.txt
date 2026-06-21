@@ -6,3 +6,4 @@ pybreaker
 redis>=5
 google-cloud-pubsub
 google-cloud-bigquery
+websockets

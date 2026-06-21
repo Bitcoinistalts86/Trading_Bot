@@ -31,6 +31,7 @@ import httpx
 
 from ..config import ExecutionMode, Settings
 from ..models import Execution, Order, OrderType, Side
+from ..reconciliation.position_store import PositionStore
 from .filters import SymbolFilters, fmt
 
 logger = logging.getLogger("execution_engine.adapter.binance")
@@ -38,6 +39,11 @@ logger = logging.getLogger("execution_engine.adapter.binance")
 _BASE_URLS = {
     ExecutionMode.TESTNET: "https://testnet.binance.vision",
     ExecutionMode.LIVE: "https://api.binance.com",
+}
+
+_WS_BASE_URLS = {
+    ExecutionMode.TESTNET: "wss://testnet.binance.vision",
+    ExecutionMode.LIVE: "wss://stream.binance.com:9443",
 }
 
 
@@ -56,6 +62,9 @@ class BinanceAdapter:
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=10.0)
         self._time_offset_ms = 0
         self._filters: dict[str, SymbolFilters] = {}
+        # Reconciliation: authoritative balances/orders from the user-data stream.
+        self.store = PositionStore()
+        self._user_stream = None
 
     async def _get_filters(self, instrument: str) -> SymbolFilters | None:
         """Fetch + cache a symbol's trading filters from exchangeInfo (best effort)."""
@@ -75,6 +84,45 @@ class BinanceAdapter:
             logger.warning("Could not load filters for %s (%s); sending unrounded.", sym, exc)
             return None
 
+    async def start_user_stream(self, on_fill=None) -> None:
+        """Seed the store from REST, then keep it live via the user-data WS."""
+        # Seed first so positions are correct immediately, before the first event.
+        try:
+            balances = await self._raw_account_balances()
+            open_orders = await self._open_orders()
+            self.store.seed(balances, open_orders)
+            logger.info("Seeded position store: %d assets, %d open orders",
+                        len(balances), len(open_orders))
+        except Exception as exc:  # noqa: BLE001 -- degrade to REST reads
+            logger.warning("Could not seed position store (%s); REST fallback active.", exc)
+
+        try:
+            from ..reconciliation.binance_user_stream import BinanceUserDataStream
+            ws_base = _WS_BASE_URLS[self.settings.mode]
+            self._user_stream = BinanceUserDataStream(
+                self._client, self._key, ws_base, self.store, on_fill=on_fill,
+            )
+            await self._user_stream.start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("User-data stream unavailable (%s); REST fallback active.", exc)
+
+    async def _open_orders(self) -> list[dict]:
+        params = {"timestamp": self._timestamp(), "recvWindow": 5000}
+        r = await self._client.get(
+            "/api/v3/openOrders", params=urllib.parse.parse_qsl(self._sign(params)),
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        return r.json()
+
+    async def _raw_account_balances(self) -> list[dict]:
+        params = {"timestamp": self._timestamp(), "recvWindow": 5000}
+        r = await self._client.get(
+            "/api/v3/account", params=urllib.parse.parse_qsl(self._sign(params)),
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        return r.json().get("balances", [])
     # --- signing helpers ----------------------------------------------------
     def _sign(self, params: dict) -> str:
         query = urllib.parse.urlencode(params)
@@ -105,14 +153,14 @@ class BinanceAdapter:
         return float(r.json()["price"])
 
     async def get_balances(self) -> dict[str, float]:
-        params = {"timestamp": self._timestamp(), "recvWindow": 5000}
-        r = await self._client.get(
-            "/api/v3/account", params=urllib.parse.parse_qsl(self._sign(params)),
-            headers=self._headers(),
-        )
-        r.raise_for_status()
+        # Prefer the reconciled store (kept live by the user-data stream).
+        if self.store.seeded:
+            return self.store.free_balances()
+        return await self._rest_balances()
+
+    async def _rest_balances(self) -> dict[str, float]:
         out: dict[str, float] = {}
-        for bal in r.json().get("balances", []):
+        for bal in await self._raw_account_balances():
             free = float(bal["free"])
             if free > 0:
                 out[bal["asset"]] = free
@@ -197,6 +245,8 @@ class BinanceAdapter:
         )
 
     async def close(self) -> None:
+        if self._user_stream:
+            await self._user_stream.stop()
         await self._client.aclose()
 
 
