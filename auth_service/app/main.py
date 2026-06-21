@@ -1,167 +1,180 @@
 # auth_service/app/main.py
+"""
+Authentication & user-management service (SQL-backed).
+
+Endpoints:
+  GET  /health
+  POST /signup            -> create USER, return tokens
+  POST /login             -> verify credentials, return tokens
+  POST /refresh           -> exchange a refresh token for new tokens
+  GET  /me                -> current user's profile  (auth)
+  GET  /admin/users       -> list users              (admin)
+  POST /admin/users/{id}/role     -> change role     (admin)
+  POST /admin/users/{id}/disable  -> deactivate user (admin)
+  POST /admin/users/{id}/enable   -> reactivate user (admin)
+
+Roles: USER (default) and ADMIN. JWTs carry `sub` (user id) and `role`.
+"""
+from __future__ import annotations
+
+import logging
 import os
-from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr
-from google.cloud import bigquery, secretmanager
-from passlib.context import CryptContext
-from jose import JWTError, jwt
-import uuid
+from datetime import datetime, timezone
 
-# --- Configuration ---
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
-JWT_SECRET_ID = os.environ.get("JWT_SECRET_ID", "jwt-hmac-secret")
-BQ_DATASET_ID = os.environ.get("BQ_DATASET_ID", "users")
-BQ_TABLE_ID = os.environ.get("BQ_TABLE_ID", "auth_accounts")
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
-REFRESH_TOKEN_EXPIRE_DAYS = 7
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from jose import JWTError
+from sqlalchemy.orm import Session
 
-# --- Clients ---
+from .db import get_db, init_db
+from .models import User
+from .schemas import RefreshRequest, RoleUpdate, Token, UserCreate, UserLogin, UserOut
+from .security import (
+    create_access_token,
+    create_refresh_token,
+    decode_token,
+    get_current_user,
+    hash_password,
+    require_admin,
+    verify_password,
+)
+
+logger = logging.getLogger("auth_service")
 app = FastAPI(title="Authentication Service")
-bq_client = bigquery.Client()
-secret_client = secretmanager.SecretManagerServiceClient()
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-# --- Helper Functions ---
-def get_jwt_secret() -> str:
-    """Fetches the JWT HMAC secret from Secret Manager."""
-    name = f"projects/{PROJECT_ID}/secrets/{JWT_SECRET_ID}/versions/latest"
-    response = secret_client.access_secret_version(name=name)
-    return response.payload.data.decode("UTF-8")
+# CORS so the dashboard (different origin in dev) can call this service.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=os.environ.get("CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-SECRET_KEY = get_jwt_secret()
+_VALID_ROLES = {"USER", "ADMIN"}
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# --- Pydantic Models ---
-class UserCreate(BaseModel):
-    email: EmailStr
-    password: str
-
-class UserLogin(BaseModel):
-    email: EmailStr
-    password: str
-
-class Token(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str
-
-# --- Endpoints ---
-@app.post("/signup", response_model=Token)
-async def signup(user: UserCreate):
-    # Check if user already exists
-    query = f"SELECT email FROM `{PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_ID}` WHERE email = @email"
-    job_config = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("email", "STRING", user.email)])
-    query_job = bq_client.query(query, job_config=job_config)
-    if query_job.result().total_rows > 0:
-        raise HTTPException(status_code=400, detail="Email already registered")
-
-    # Hash password
-    hashed_password = pwd_context.hash(user.password)
-
-    # Create new user in BigQuery
-    user_id = str(uuid.uuid4())
-    user_row = {
-        "user_id": user_id,
-        "email": user.email,
-        "password_hash": hashed_password,
-        "role": "USER", # Default role
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    errors = bq_client.insert_rows_json(f"{PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_ID}", [user_row])
-    if errors:
-        raise HTTPException(status_code=500, detail="Could not create user.")
-
-    # Generate tokens
-    access_token = create_access_token(
-        data={"sub": user_id, "role": "USER"},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+def _tokens(user: User) -> Token:
+    return Token(
+        access_token=create_access_token(user.id, user.role),
+        refresh_token=create_refresh_token(user.id),
     )
-    # For simplicity, we'll use a simple refresh token for now
-    refresh_token = create_access_token(data={"sub": user_id}, expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
 
-    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
 
-@app.post("/login", response_model=Token)
-async def login(user: UserLogin):
-    # Find user
-    query = f"SELECT user_id, email, password_hash, role FROM `{PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_ID}` WHERE email = @email"
-    job_config = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("email", "STRING", user.email)])
-    query_job = bq_client.query(query, job_config=job_config)
-    result = list(query_job.result())
-    if not result:
-        raise HTTPException(status_code=400, detail="Incorrect email or password")
+@app.on_event("startup")
+def _startup() -> None:
+    init_db()
+    _maybe_bootstrap_admin()
 
-    db_user = result[0]
-    if not pwd_context.verify(user.password, db_user.password_hash):
-        raise HTTPException(status_code=400, detail="Incorrect email or password")
 
-    # Update last_login_at
-    query = f"""
-        UPDATE `{PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_ID}`
-        SET last_login_at = @last_login_at
-        WHERE user_id = @user_id
-    """
-    job_config = bigquery.QueryJobConfig(query_parameters=[
-        bigquery.ScalarQueryParameter("last_login_at", "TIMESTAMP", datetime.now(timezone.utc).isoformat()),
-        bigquery.ScalarQueryParameter("user_id", "STRING", db_user.user_id)
-    ])
-    bq_client.query(query, job_config=job_config).result()
-
-    # Generate tokens
-    access_token = create_access_token(
-        data={"sub": db_user.user_id, "role": db_user.role},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    refresh_token = create_access_token(data={"sub": db_user.user_id}, expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
-
-    return {"access_token": access_token, "refresh_token": refresh_token, "token_type": "bearer"}
-
-@app.post("/refresh", response_model=Token)
-async def refresh(refresh_token: str):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+def _maybe_bootstrap_admin() -> None:
+    """Optionally create an admin from env on first boot (handy for compose)."""
+    email = os.environ.get("BOOTSTRAP_ADMIN_EMAIL")
+    password = os.environ.get("BOOTSTRAP_ADMIN_PASSWORD")
+    if not (email and password):
+        return
+    from .db import SessionLocal
+    db = SessionLocal()
     try:
-        payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
+        if not db.query(User).filter(User.email == email).first():
+            db.add(User(email=email, password_hash=hash_password(password), role="ADMIN"))
+            db.commit()
+            logger.warning("Bootstrapped admin user %s", email)
+    finally:
+        db.close()
 
-    # In a real implementation, we would check if the refresh token is revoked
-
-    # Find user role
-    query = f"SELECT role FROM `{PROJECT_ID}.{BQ_DATASET_ID}.{BQ_TABLE_ID}` WHERE user_id = @user_id"
-    job_config = bigquery.QueryJobConfig(query_parameters=[bigquery.ScalarQueryParameter("user_id", "STRING", user_id)])
-    query_job = bq_client.query(query, job_config=job_config)
-    result = list(query_job.result())
-    if not result:
-        raise credentials_exception
-
-    db_user = result[0]
-
-    # Generate new tokens
-    access_token = create_access_token(
-        data={"sub": user_id, "role": db_user.role},
-        expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    )
-    new_refresh_token = create_access_token(data={"sub": user_id}, expires_delta=timedelta(days=REFRESH_TOKEN_EXPIRE_DAYS))
-
-    return {"access_token": access_token, "refresh_token": new_refresh_token, "token_type": "bearer"}
 
 @app.get("/health")
-def health_check():
+def health() -> dict:
     return {"status": "ok"}
+
+
+@app.post("/signup", response_model=Token)
+def signup(payload: UserCreate, db: Session = Depends(get_db)) -> Token:
+    if db.query(User).filter(User.email == payload.email).first():
+        raise HTTPException(status_code=400, detail="Email already registered")
+    user = User(email=payload.email, password_hash=hash_password(payload.password), role="USER")
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return _tokens(user)
+
+
+@app.post("/login", response_model=Token)
+def login(payload: UserLogin, db: Session = Depends(get_db)) -> Token:
+    user = db.query(User).filter(User.email == payload.email).first()
+    if not user or not verify_password(payload.password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="Account disabled")
+    user.last_login_at = datetime.now(timezone.utc)
+    db.commit()
+    return _tokens(user)
+
+
+@app.post("/refresh", response_model=Token)
+def refresh(payload: RefreshRequest, db: Session = Depends(get_db)) -> Token:
+    err = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token")
+    try:
+        claims = decode_token(payload.refresh_token)
+        if claims.get("type") != "refresh":
+            raise err
+        user_id = claims.get("sub")
+    except JWTError:
+        raise err
+    user = db.get(User, user_id) if user_id else None
+    if not user or not user.is_active:
+        raise err
+    return _tokens(user)
+
+
+@app.get("/me", response_model=UserOut)
+def me(user: User = Depends(get_current_user)) -> User:
+    return user
+
+
+# --- admin ----------------------------------------------------------------- #
+@app.get("/admin/users", response_model=list[UserOut])
+def list_users(_: User = Depends(require_admin), db: Session = Depends(get_db)) -> list[User]:
+    return db.query(User).order_by(User.created_at.desc()).all()
+
+
+@app.post("/admin/users/{user_id}/role", response_model=UserOut)
+def set_role(user_id: str, body: RoleUpdate, admin: User = Depends(require_admin),
+             db: Session = Depends(get_db)) -> User:
+    role = body.role.upper()
+    if role not in _VALID_ROLES:
+        raise HTTPException(status_code=400, detail="role must be USER or ADMIN")
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    target.role = role
+    db.commit()
+    db.refresh(target)
+    return target
+
+
+@app.post("/admin/users/{user_id}/disable", response_model=UserOut)
+def disable_user(user_id: str, admin: User = Depends(require_admin),
+                 db: Session = Depends(get_db)) -> User:
+    if user_id == admin.id:
+        raise HTTPException(status_code=400, detail="Admins cannot disable themselves")
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    target.is_active = False
+    db.commit()
+    db.refresh(target)
+    return target
+
+
+@app.post("/admin/users/{user_id}/enable", response_model=UserOut)
+def enable_user(user_id: str, _: User = Depends(require_admin),
+                db: Session = Depends(get_db)) -> User:
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    target.is_active = True
+    db.commit()
+    db.refresh(target)
+    return target

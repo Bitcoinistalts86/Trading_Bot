@@ -1,54 +1,65 @@
 // frontend/src/contexts/AuthContext.tsx
 "use client";
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
+import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { useRouter } from "next/navigation";
+import { api, User } from "@/lib/api";
 
 interface AuthContextType {
+  user: User | null;
+  loading: boolean;
   isAuthenticated: boolean;
-  login: (token: string, refreshToken: string) => void;
+  login: (email: string, password: string) => Promise<void>;
+  signup: (email: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
   const router = useRouter();
 
+  // Hydrate the session on load: if we have a token, fetch the profile.
   useEffect(() => {
-    // In a real app, you would check for a token in an HttpOnly cookie
-    // For now, we'll just check local storage.
-    const token = localStorage.getItem('token');
-    if (token) {
-      setIsAuthenticated(true);
-    }
+    (async () => {
+      if (api.tokens.get()) {
+        try { setUser(await api.me()); } catch { api.tokens.clear(); }
+      }
+      setLoading(false);
+    })();
   }, []);
 
-  const login = (token: string, refreshToken: string) => {
-    localStorage.setItem('token', token);
-    localStorage.setItem('refreshToken', refreshToken);
-    setIsAuthenticated(true);
-    router.push('/terminal');
+  const afterAuth = async () => {
+    setUser(await api.me());
+    router.push("/dashboard");
+  };
+
+  const login = async (email: string, password: string) => {
+    api.tokens.set(await api.login(email, password));
+    await afterAuth();
+  };
+
+  const signup = async (email: string, password: string) => {
+    api.tokens.set(await api.signup(email, password));
+    await afterAuth();
   };
 
   const logout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('refreshToken');
-    setIsAuthenticated(false);
-    router.push('/login');
+    api.tokens.clear();
+    setUser(null);
+    router.push("/login");
   };
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, login, logout }}>
+    <AuthContext.Provider value={{ user, loading, isAuthenticated: !!user, login, signup, logout }}>
       {children}
     </AuthContext.Provider>
   );
 };
 
 export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within an AuthProvider");
+  return ctx;
 };
