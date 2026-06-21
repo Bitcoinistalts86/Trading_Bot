@@ -25,11 +25,13 @@ import hmac
 import logging
 import time
 import urllib.parse
+from decimal import Decimal
 
 import httpx
 
 from ..config import ExecutionMode, Settings
 from ..models import Execution, Order, OrderType, Side
+from .filters import SymbolFilters, fmt
 
 logger = logging.getLogger("execution_engine.adapter.binance")
 
@@ -53,6 +55,25 @@ class BinanceAdapter:
         self._secret = settings.binance_api_secret.encode()
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=10.0)
         self._time_offset_ms = 0
+        self._filters: dict[str, SymbolFilters] = {}
+
+    async def _get_filters(self, instrument: str) -> SymbolFilters | None:
+        """Fetch + cache a symbol's trading filters from exchangeInfo (best effort)."""
+        sym = instrument.upper()
+        if sym in self._filters:
+            return self._filters[sym]
+        try:
+            r = await self._client.get("/api/v3/exchangeInfo", params={"symbol": sym})
+            r.raise_for_status()
+            symbols = r.json().get("symbols", [])
+            if not symbols:
+                return None
+            filt = SymbolFilters.from_symbol_info(symbols[0])
+            self._filters[sym] = filt
+            return filt
+        except Exception as exc:  # noqa: BLE001 -- degrade to unrounded send
+            logger.warning("Could not load filters for %s (%s); sending unrounded.", sym, exc)
+            return None
 
     # --- signing helpers ----------------------------------------------------
     def _sign(self, params: dict) -> str:
@@ -99,20 +120,44 @@ class BinanceAdapter:
 
     # --- order submission ---------------------------------------------------
     async def place_order(self, order: Order, ref_price: float) -> Execution:
+        is_limit = order.order_type == OrderType.LIMIT
+        if is_limit and not order.price:
+            raise ValueError("LIMIT order requires a price.")
+
+        # Round onto the symbol's valid grid before signing. Without this the
+        # exchange rejects anything off-step/off-tick or under min-notional.
+        filt = await self._get_filters(order.instrument)
+        if filt is not None:
+            qty_dec = filt.round_quantity(order.quantity)
+            price_dec = filt.round_price(order.price) if is_limit else None
+            notional_ref = price_dec if is_limit else Decimal(str(ref_price))
+            reason = filt.validate(qty_dec, notional_ref)
+            if reason:
+                logger.warning("Order %s violates symbol filters: %s", order.client_order_id, reason)
+                return Execution(
+                    order_id=order.client_order_id, exchange=self.name, instrument=order.instrument,
+                    side=order.side, price=float(notional_ref), quantity=0.0,
+                    status=f"REJECTED:{reason}", correlation_id=order.correlation_id,
+                )
+            qty_str = fmt(qty_dec, filt.qty_decimals)
+            price_str = fmt(price_dec, filt.price_decimals) if is_limit else None
+        else:
+            # Filters unavailable -> best-effort send with the old formatter.
+            qty_str = _fmt(order.quantity)
+            price_str = _fmt(order.price) if is_limit else None
+
         params = {
             "symbol": order.instrument.upper(),
             "side": order.side.value,
-            "type": "MARKET" if order.order_type in (OrderType.MARKET, OrderType.TWAP, OrderType.VWAP) else "LIMIT",
-            "quantity": _fmt(order.quantity),
+            "type": "LIMIT" if is_limit else "MARKET",
+            "quantity": qty_str,
             "newClientOrderId": order.client_order_id,
             "newOrderRespType": "FULL",
             "timestamp": self._timestamp(),
             "recvWindow": 5000,
         }
-        if params["type"] == "LIMIT":
-            if not order.price:
-                raise ValueError("LIMIT order requires a price.")
-            params["price"] = _fmt(order.price)
+        if is_limit:
+            params["price"] = price_str
             params["timeInForce"] = "GTC"
 
         body = self._sign(params)
