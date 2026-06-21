@@ -98,9 +98,12 @@ careful review:
 3. **Idempotency / dedup.** `client_order_id` is generated and sent, but there is
    no persistent store to dedupe retried signals or recover in-flight orders
    after a crash.
-4. **Persistent risk state.** `RiskManager` counters (open orders, position,
-   daily PnL) are in-process and reset on restart. They belong in Redis so they
-   survive restarts and are shared across replicas.
+4. ~~**Persistent risk state.**~~ ✅ **Done** (PR: persistent-risk-state). The
+   per-minute order-rate window and the daily realized-loss counter now live in
+   Redis (`risk:orders` ZSET, `risk:pnl:{YYYYMMDD}` with TTL), shared across
+   replicas and durable across restarts — so a crash no longer resets the
+   daily-loss stand-down. In-memory fallback when Redis is absent. (Open-order
+   count and positions already come from the reconciled PositionStore.)
 5. **Secret management.** Keys are read from env. In production they should come
    from Secret Manager (the repo already uses it for the JWT secret), never env
    or image layers.
