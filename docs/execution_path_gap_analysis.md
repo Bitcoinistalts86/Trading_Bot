@@ -87,10 +87,14 @@ careful review:
    `GET /api/v3/exchangeInfo`, floors quantity to `stepSize`, rounds price to
    `tickSize` (Decimal-precise), and rejects sub-`minNotional` orders before
    signing instead of letting the exchange bounce them.
-2. **Fill reconciliation via the user-data WebSocket stream.** REST responses
-   can be `NEW`/partial; the source of truth for fills and balances is the
-   `executionReport` stream (`listenKey`). Position state should be reconciled
-   from the exchange, not inferred locally.
+2. ~~**Fill reconciliation via the user-data WebSocket stream.**~~ ✅ **Done**
+   (PR: fill-reconciliation). `BinanceAdapter` opens the user-data stream
+   (`listenKey` create + 30-min keepalive + reconnect), seeds a `PositionStore`
+   from `GET /api/v3/account` + `openOrders`, and applies `outboundAccountPosition`
+   (authoritative balances) and `executionReport` (order lifecycle + fills).
+   `/v1/positions` now reports exchange truth (`reconciled: true`), and the risk
+   manager reads open-order count + positions from the store instead of local
+   inference. New `/v1/reconciliation` endpoint exposes the live snapshot.
 3. **Idempotency / dedup.** `client_order_id` is generated and sent, but there is
    no persistent store to dedupe retried signals or recover in-flight orders
    after a crash.

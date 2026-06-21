@@ -44,6 +44,22 @@ class RiskManager:
         self._position_qty: dict[str, float] = {}   # signed base-asset qty per instrument
         self._daily_realized_pnl = 0.0
         self._pnl_day = time.gmtime().tm_yday
+        self._store = None  # optional PositionStore (exchange truth)
+
+    def bind_store(self, store) -> None:
+        """Bind a reconciled PositionStore so open-order count and positions come
+        from exchange truth instead of locally-inferred counters."""
+        self._store = store
+
+    def _open_order_count(self) -> int:
+        if self._store is not None and self._store.seeded:
+            return self._store.open_order_count()
+        return self._open_orders
+
+    def _current_position(self, instrument: str) -> float:
+        if self._store is not None and self._store.seeded:
+            return self._store.position_for(instrument)
+        return self._position_qty.get(instrument.upper(), 0.0)
 
     # --- state updates (called by the executor on fills) --------------------
     def register_open(self) -> None:
@@ -88,13 +104,13 @@ class RiskManager:
         if len(self._order_times) >= self.limits.max_orders_per_minute:
             return RiskDecision(False, "RATE_LIMIT_EXCEEDED")
 
-        # 4. open-order cap
-        if self._open_orders >= self.limits.max_open_orders:
+        # 4. open-order cap (authoritative from the store when reconciled)
+        if self._open_order_count() >= self.limits.max_open_orders:
             return RiskDecision(False, "MAX_OPEN_ORDERS")
 
-        # 5. projected position notional
+        # 5. projected position notional (authoritative position when reconciled)
         signed = order.quantity if order.side == Side.BUY else -order.quantity
-        projected = abs(self._position_qty.get(order.instrument.upper(), 0.0) + signed) * price
+        projected = abs(self._current_position(order.instrument) + signed) * price
         if projected > self.limits.max_position_notional_usd:
             return RiskDecision(False, "POSITION_NOTIONAL_EXCEEDED")
 

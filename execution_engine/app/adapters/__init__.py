@@ -11,15 +11,16 @@ from .paper import PaperAdapter
 logger = logging.getLogger("execution_engine.adapters")
 
 
-async def build_adapter(settings: Settings) -> ExchangeAdapter:
+async def build_adapter(settings: Settings, on_fill=None) -> ExchangeAdapter:
     if settings.mode == ExecutionMode.PAPER:
         return PaperAdapter(settings)
 
-    # TESTNET / LIVE -> real signed adapter
+    # TESTNET / LIVE -> real signed adapter, with exchange-truth reconciliation.
     from .binance import BinanceAdapter
 
     adapter = BinanceAdapter(settings)
     await adapter.sync_time()
+    await adapter.start_user_stream(on_fill=on_fill)
     return adapter
 
 

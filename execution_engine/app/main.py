@@ -133,9 +133,17 @@ def _start_signal_subscriber(loop: asyncio.AbstractEventLoop) -> None:
 async def startup() -> None:
     global adapter, risk, executor, sink, kill_switch
     kill_switch = await build_kill_switch(settings.redis_host, settings.redis_port)
-    adapter = await build_adapter(settings)
-    risk = RiskManager(settings.limits, kill_switch)
     sink = ExecutionSink(settings)
+
+    # Fills reconciled from the exchange user-data stream are audited too.
+    async def _on_reconciled_fill(fill: dict) -> None:
+        logger.info("Reconciled fill: %s", fill)
+
+    adapter = await build_adapter(settings, on_fill=_on_reconciled_fill)
+    risk = RiskManager(settings.limits, kill_switch)
+    # If the adapter reconciles against the exchange, risk reads truth from it.
+    if getattr(adapter, "store", None) is not None:
+        risk.bind_store(adapter.store)
     executor = Executor(adapter, risk, on_execution=_handle_execution)
 
     loop = asyncio.get_running_loop()
@@ -191,12 +199,30 @@ async def set_kill_switch_legacy(action: str) -> dict:
 @app.get("/v1/positions")
 async def positions() -> dict:
     balances = await adapter.get_balances() if adapter else {}
-    return {"mode": settings.mode.value, "balances": balances, "risk": risk.snapshot() if risk else {}}
+    store = getattr(adapter, "store", None)
+    reconciled = bool(store and store.seeded)
+    out = {
+        "mode": settings.mode.value,
+        "balances": balances,
+        "reconciled": reconciled,  # True => balances are exchange truth, not inferred
+        "risk": risk.snapshot() if risk else {},
+    }
+    if reconciled:
+        out["open_orders"] = store.open_order_count()
+    return out
 
 
 @app.get("/positions")  # legacy alias
 async def positions_legacy() -> dict:
     return await positions()
+
+
+@app.get("/v1/reconciliation")
+async def reconciliation() -> dict:
+    store = getattr(adapter, "store", None)
+    if not store:
+        return {"reconciled": False, "reason": "paper mode has no exchange to reconcile"}
+    return store.snapshot()
 
 
 @app.get("/v1/risk-config")
