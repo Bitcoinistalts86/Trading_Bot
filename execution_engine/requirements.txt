@@ -1,4 +1,8 @@
 fastapi
 uvicorn
+pydantic>=2
+httpx
+pybreaker
+redis>=5
+google-cloud-pubsub
 google-cloud-bigquery
-pydantic

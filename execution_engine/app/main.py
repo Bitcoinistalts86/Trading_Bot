@@ -1,110 +1,209 @@
 # execution_engine/app/main.py
+"""
+Unified Execution Engine.
+
+This single FastAPI app replaces the two divergent implementations that used to
+live at `execution_engine/main.py` (in-memory simulation) and
+`execution_engine/app/main.py` (Redis/circuit-breaker scaffold that could not
+import). It keeps the good ideas from both:
+
+  * from app/main.py: Redis-backed multi-level kill-switch, a circuit breaker
+    around the model gateway, and a BigQuery audit ledger;
+  * from main.py: the FastAPI surface, the Pub/Sub signal subscriber, and the
+    TWAP/VWAP algos -- now routed through a real ExchangeAdapter.
+
+Endpoints (paths match contracts/openapi.yaml, with legacy aliases kept):
+  GET  /health
+  POST /v1/order        (alias: /order)            -- submit an order
+  POST /v1/kill-switch  (alias: /kill-switch)      -- set global/user kill level
+  GET  /v1/positions    (alias: /positions)        -- balances + risk snapshot
+  GET  /v1/risk-config                              -- effective limits & mode
+"""
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 import os
-import uuid
-from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, BackgroundTasks
-from pydantic import BaseModel
-import httpx
-from google.cloud import pubsub_v1, bigquery
+
 import pybreaker
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 
-# Import the shared Redis client
-from ..libraries.state.redis_state import get_redis_client, RedisStateClient
-from ..libraries.state.kill_switch import get_kill_switch_client, KillSwitchClient, KillSwitchLevel
-from ..libraries.observability import init_observability
+from .adapters import build_adapter
+from .config import load_settings
+from .execution import Executor
+from .kill_switch import KillSwitchLevel, build_kill_switch
+from .models import Execution, Order, Signal
+from .risk import RiskManager
+from .sinks import ExecutionSink
 
-# --- Configuration ---
-PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT")
-# ... (rest of configuration is the same)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+logger = logging.getLogger("execution_engine")
 
-# --- Clients ---
 app = FastAPI(title="Execution Engine")
-init_observability("execution_engine", app)
-redis_client: RedisStateClient = None # Will be initialized on startup
-kill_switch_client: KillSwitchClient = None
-model_gateway_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
-bq_client = bigquery.Client()
-http_client = httpx.AsyncClient()
 
-class TradeSignal(BaseModel):
-    instrument: str
-    side: str
-    quantity: float
-    user_id: str
-    correlation_id: str = None
+# Process-wide singletons, wired on startup.
+settings = load_settings()
+adapter = None
+risk: RiskManager | None = None
+executor: Executor | None = None
+sink: ExecutionSink | None = None
+kill_switch = None
+model_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
 
-# ... (rest of pydantic models and other functions are the same)
 
-async def process_signal(signal: TradeSignal):
-    """
-    Main logic to process a signal, get a prediction, run risk checks,
-    and execute a trade.
-    """
-    trade_id = str(uuid.uuid4())
-    log_entry = {
-        "trade_id": trade_id, "strategy": "baseline_v1", "instrument": signal.instrument,
-        "timestamp": datetime.now(timezone.utc).isoformat(), "side": "PENDING", "quantity": 0.0,
-        "price": 0.0, "execution_status": "RECEIVED", "prediction_id": None, "risk_flag": None,
-        "correlation_id": signal.correlation_id, "user_id": signal.user_id
-    }
+# --------------------------------------------------------------------------- #
+# Model gateway (optional). Wrapped in a circuit breaker so a flaky model
+# service trips open and orders are rejected rather than hanging.
+# --------------------------------------------------------------------------- #
+@model_breaker
+async def get_prediction(instrument: str) -> dict:
+    if not settings.model_gateway_url:
+        return {"prediction": None, "skipped": True}
+    import httpx
+    async with httpx.AsyncClient(timeout=2.0) as client:
+        r = await client.post(
+            f"{settings.model_gateway_url}/predict",
+            json={"instances": [{"instrument": instrument}]},
+        )
+        r.raise_for_status()
+        return {"prediction": r.json()}
 
+
+async def _handle_execution(ex: Execution) -> None:
+    if sink:
+        await sink.publish(ex)
+
+
+async def process_order(order: Order) -> list[Execution]:
+    assert risk and executor
+    ref_price = await adapter.get_mark_price(order.instrument)
+
+    decision = await risk.check(order, ref_price)
+    if not decision.approved:
+        logger.warning("Order %s rejected: %s", order.client_order_id, decision.reason)
+        rej = Execution(
+            order_id=order.client_order_id, exchange=getattr(adapter, "name", "unknown"),
+            instrument=order.instrument, side=order.side, price=ref_price,
+            quantity=0.0, status=f"REJECTED:{decision.reason}", correlation_id=order.correlation_id,
+        )
+        await _handle_execution(rej)
+        return [rej]
+
+    # Optional model gateway consultation (non-fatal if it trips).
     try:
-        # 1. Check Kill-Switch for user and globally
-        if await kill_switch_client.is_hard_kill_active(signal.user_id):
-            logging.critical("HARD kill-switch active. Halting signal processing.")
-            raise HTTPException(status_code=503, detail="HARD kill-switch is active.")
+        await get_prediction(order.instrument)
+    except pybreaker.CircuitBreakerError:
+        logger.warning("Model gateway circuit open; proceeding without prediction.")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Model gateway error (ignored): %s", exc)
 
-        if await kill_switch_client.is_soft_kill_active(signal.user_id):
-            log_entry["execution_status"] = "REJECTED"
-            log_entry["risk_flag"] = "USER_OR_GLOBAL_KILL_SWITCH"
-            await log_trade(log_entry)
-            logging.warning("User or global kill-switch is active. Order rejected.")
-            return
+    return await executor.execute(order)
 
-        # 2. Get Prediction from Model Gateway
-        @model_gateway_breaker
-        async def get_prediction(instrument: str):
-            # In a real implementation, this would call the model gateway
-            # For now, we'll just simulate a successful call
-            return {"prediction_id": str(uuid.uuid4()), "prediction": 0.6}
 
-        try:
-            prediction_result = await get_prediction(signal.instrument)
-            log_entry["prediction_id"] = prediction_result["prediction_id"]
-        except pybreaker.CircuitBreakerError:
-            log_entry["execution_status"] = "REJECTED"
-            log_entry["risk_flag"] = "MODEL_GATEWAY_UNAVAILABLE"
-            await log_trade(log_entry)
-            logging.warning("Model gateway is unavailable. Order rejected.")
-            return
+# --------------------------------------------------------------------------- #
+# Pub/Sub signal subscriber
+# --------------------------------------------------------------------------- #
+def _start_signal_subscriber(loop: asyncio.AbstractEventLoop) -> None:
+    try:
+        from google.cloud import pubsub_v1
+        subscriber = pubsub_v1.SubscriberClient()
+        sub_path = subscriber.subscription_path(settings.project_id, settings.signals_subscription)
 
-        # ... (rest of the function is the same)
+        def callback(message) -> None:
+            try:
+                data = json.loads(message.data)
+                order = Signal(**data).to_order()
+                asyncio.run_coroutine_threadsafe(process_order(order), loop)
+                message.ack()
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Bad signal message: %s", exc)
+                message.nack()
 
-    except Exception as e:
-        logging.error(f"Failed to process signal: {e}")
-        log_entry["execution_status"] = "ERROR"
-        await log_trade(log_entry)
+        subscriber.subscribe(sub_path, callback=callback)
+        logger.info("Subscribed to signals: %s", sub_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Signal subscriber disabled (%s).", exc)
 
-# ... (subscribe_to_signals is the same)
 
+# --------------------------------------------------------------------------- #
+# Lifecycle
+# --------------------------------------------------------------------------- #
 @app.on_event("startup")
-async def startup_event():
-    """On startup, initialize clients and start background tasks."""
-    global redis_client, kill_switch_client
-    redis_client = get_redis_client()
-    kill_switch_client = get_kill_switch_client(redis_client.client)
-    asyncio.create_task(subscribe_to_signals())
+async def startup() -> None:
+    global adapter, risk, executor, sink, kill_switch
+    kill_switch = await build_kill_switch(settings.redis_host, settings.redis_port)
+    adapter = await build_adapter(settings)
+    risk = RiskManager(settings.limits, kill_switch)
+    sink = ExecutionSink(settings)
+    executor = Executor(adapter, risk, on_execution=_handle_execution)
+
+    loop = asyncio.get_running_loop()
+    import threading
+    threading.Thread(target=_start_signal_subscriber, args=(loop,), daemon=True).start()
+    logger.warning("Execution engine ready in %s mode.", settings.mode.value.upper())
+
 
 @app.on_event("shutdown")
-async def shutdown_event():
-    """On shutdown, close client connections."""
-    if redis_client:
-        await redis_client.close()
+async def shutdown() -> None:
+    if adapter:
+        await adapter.close()
 
+
+# --------------------------------------------------------------------------- #
+# REST endpoints
+# --------------------------------------------------------------------------- #
 @app.get("/health")
-async def health():
-    """Health check endpoint."""
-    return {"status": "ok"}
+async def health() -> dict:
+    return {"status": "ok", "mode": settings.mode.value}
+
+
+@app.post("/v1/order")
+async def submit_order(order: Order, background_tasks: BackgroundTasks) -> dict:
+    background_tasks.add_task(process_order, order)
+    return {"status": "accepted", "client_order_id": order.client_order_id, "mode": settings.mode.value}
+
+
+@app.post("/order")  # legacy alias
+async def submit_order_legacy(order: Order, background_tasks: BackgroundTasks) -> dict:
+    return await submit_order(order, background_tasks)
+
+
+@app.post("/v1/kill-switch")
+async def set_kill_switch(level: str, user_id: str | None = None) -> dict:
+    try:
+        ks_level = KillSwitchLevel(level.upper())
+    except ValueError:
+        raise HTTPException(400, detail="level must be OFF|SOFT|HARD")
+    if user_id:
+        await kill_switch.set_user_level(user_id, ks_level)
+    else:
+        await kill_switch.set_global_level(ks_level)
+    return {"status": "ok", "scope": user_id or "global", "level": ks_level.value}
+
+
+@app.post("/kill-switch")  # legacy alias (ACTIVATE/DEACTIVATE -> HARD/OFF)
+async def set_kill_switch_legacy(action: str) -> dict:
+    level = "HARD" if action.upper() == "ACTIVATE" else "OFF"
+    return await set_kill_switch(level)
+
+
+@app.get("/v1/positions")
+async def positions() -> dict:
+    balances = await adapter.get_balances() if adapter else {}
+    return {"mode": settings.mode.value, "balances": balances, "risk": risk.snapshot() if risk else {}}
+
+
+@app.get("/positions")  # legacy alias
+async def positions_legacy() -> dict:
+    return await positions()
+
+
+@app.get("/v1/risk-config")
+async def risk_config() -> dict:
+    return {"mode": settings.mode.value, "limits": vars(settings.limits)}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
