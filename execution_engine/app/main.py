@@ -35,6 +35,7 @@ from .execution import Executor
 from .kill_switch import KillSwitchLevel, build_kill_switch
 from .models import Execution, Order, Signal
 from .risk import RiskManager
+from .risk_state import build_risk_state
 from .sinks import ExecutionSink
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -140,7 +141,8 @@ async def startup() -> None:
         logger.info("Reconciled fill: %s", fill)
 
     adapter = await build_adapter(settings, on_fill=_on_reconciled_fill)
-    risk = RiskManager(settings.limits, kill_switch)
+    risk_state = await build_risk_state(settings.redis_host, settings.redis_port)
+    risk = RiskManager(settings.limits, kill_switch, state=risk_state)
     # If the adapter reconciles against the exchange, risk reads truth from it.
     if getattr(adapter, "store", None) is not None:
         risk.bind_store(adapter.store)
