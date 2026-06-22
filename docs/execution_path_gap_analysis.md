@@ -109,9 +109,12 @@ careful review:
    replicas and durable across restarts — so a crash no longer resets the
    daily-loss stand-down. In-memory fallback when Redis is absent. (Open-order
    count and positions already come from the reconciled PositionStore.)
-5. **Secret management.** Keys are read from env. In production they should come
-   from Secret Manager (the repo already uses it for the JWT secret), never env
-   or image layers.
+5. ~~**Secret management (exchange keys).**~~ ✅ **Done** (PR: secret-manager).
+   `SecretResolver` reads Binance keys from Google Secret Manager when
+   `SECRETS_BACKEND=gcp` (or a per-secret `*_SECRET_RESOURCE` override is set), and
+   falls back to env for local/dev. Secret values are never logged. *Follow-up:*
+   apply the same resolver to the auth service's `JWT_SECRET` (currently env), and
+   grant the service account `secretAccessor` in Terraform.
 6. **Spot vs. Futures / margin.** This adapter is Spot. Futures (the connector
    already streams `fapi` data) needs `/fapi/v1/order`, leverage/position-mode
    handling, and liquidation-aware risk.

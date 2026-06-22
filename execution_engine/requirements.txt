@@ -7,3 +7,4 @@ redis>=5
 google-cloud-pubsub
 google-cloud-bigquery
 websockets
+google-cloud-secret-manager
