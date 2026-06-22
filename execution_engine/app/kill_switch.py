@@ -66,16 +66,13 @@ async def build_kill_switch(redis_host: str, redis_port: int):
     from `libraries.state`; falls back to in-memory if Redis or the library is
     unavailable.
     """
-    if not redis_host:
+    from .redis_factory import connect_redis
+    client = await connect_redis(redis_host, redis_port)
+    if client is None:
         return _InMemoryKillSwitch()
     try:
-        import redis.asyncio as redis  # noqa: WPS433 (lazy import by design)
         from libraries.state.kill_switch import get_kill_switch_client  # type: ignore
-
-        client = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
-        await client.ping()
-        logger.info("Connected to Redis kill-switch at %s:%s", redis_host, redis_port)
         return get_kill_switch_client(client)
     except Exception as exc:  # noqa: BLE001 -- degrade gracefully, never crash startup
-        logger.error("Redis kill-switch unavailable (%s). Falling back to in-memory.", exc)
+        logger.error("Kill-switch library unavailable (%s). Falling back to in-memory.", exc)
         return _InMemoryKillSwitch()

@@ -10,4 +10,5 @@ COPY . .
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Railway (and Cloud Run) inject $PORT; bind it, default 8000 for local.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

@@ -83,18 +83,10 @@ class RedisIdempotencyStore:
 
 
 async def build_idempotency_store(redis_host: str, redis_port: int):
-    """Prefer Redis; fall back to in-memory if Redis is unavailable."""
-    if not redis_host:
-        return InMemoryIdempotencyStore()
-    try:
-        import redis.asyncio as redis  # lazy by design
-        client = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
-        await client.ping()
-        logger.info("Connected to Redis idempotency store at %s:%s", redis_host, redis_port)
-        return RedisIdempotencyStore(client)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Redis idempotency store unavailable (%s). Falling back to in-memory.", exc)
-        return InMemoryIdempotencyStore()
+    """Prefer Redis (REDIS_URL or host/port); fall back to in-memory."""
+    from .redis_factory import connect_redis
+    client = await connect_redis(redis_host, redis_port)
+    return RedisIdempotencyStore(client) if client is not None else InMemoryIdempotencyStore()
 
 
 async def run_idempotent(store, key: str, ttl: int, fn):
