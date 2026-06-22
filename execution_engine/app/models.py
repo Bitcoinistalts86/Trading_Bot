@@ -45,6 +45,9 @@ class Signal(BaseModel):
     # Operational fields needed for kill-switch scoping + auditing.
     user_id: str = "system"
     correlation_id: Optional[str] = None
+    # Stable per-intent key for deduplication. If the producer doesn't set one,
+    # the subscriber falls back to the Pub/Sub message_id (redelivery-safe).
+    idempotency_key: Optional[str] = None
 
     def to_order(self) -> "Order":
         return Order(
@@ -58,6 +61,7 @@ class Signal(BaseModel):
             user_id=self.user_id,
             correlation_id=self.correlation_id or _new_id("corr"),
             strategy_id=self.strategy_id,
+            idempotency_key=self.idempotency_key,
         )
 
 
@@ -73,9 +77,14 @@ class Order(BaseModel):
     user_id: str = "system"
     correlation_id: str = Field(default_factory=lambda: _new_id("corr"))
     strategy_id: str = "unknown"
+    idempotency_key: Optional[str] = None
 
     def notional(self, ref_price: float) -> float:
         return self.quantity * (self.price or ref_price)
+
+    def effective_idempotency_key(self) -> str:
+        """The key used for dedup. Precedence: explicit key > correlation_id."""
+        return self.idempotency_key or self.correlation_id
 
 
 class Execution(BaseModel):

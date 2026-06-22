@@ -68,6 +68,9 @@ class Executor:
             # aborts the remainder of a long-running algo order.
             ref_price = await self.adapter.get_mark_price(order.instrument)
             child = Order(
+                # Deterministic per-slice id: a re-sent slice is rejected by the
+                # exchange as a duplicate clientOrderId (idempotent recovery).
+                client_order_id=f"{order.client_order_id}-s{i}",
                 instrument=order.instrument, side=order.side,
                 quantity=order.quantity * w, price=None, order_type=OrderType.MARKET,
                 user_id=order.user_id, correlation_id=order.correlation_id,

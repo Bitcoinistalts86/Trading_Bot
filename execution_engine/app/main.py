@@ -27,11 +27,16 @@ import logging
 import os
 
 import pybreaker
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
 
 from .adapters import build_adapter
 from .config import load_settings
 from .execution import Executor
+from .idempotency import (
+    build_idempotency_store,
+    deterministic_client_order_id,
+    run_idempotent,
+)
 from .kill_switch import KillSwitchLevel, build_kill_switch
 from .models import Execution, Order, Signal
 from .risk import RiskManager
@@ -50,6 +55,7 @@ risk: RiskManager | None = None
 executor: Executor | None = None
 sink: ExecutionSink | None = None
 kill_switch = None
+idem_store = None
 model_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
 
 
@@ -76,7 +82,7 @@ async def _handle_execution(ex: Execution) -> None:
         await sink.publish(ex)
 
 
-async def process_order(order: Order) -> list[Execution]:
+async def _execute_order(order: Order) -> list[Execution]:
     assert risk and executor
     ref_price = await adapter.get_mark_price(order.instrument)
 
@@ -102,6 +108,33 @@ async def process_order(order: Order) -> list[Execution]:
     return await executor.execute(order)
 
 
+async def process_order(order: Order) -> list[Execution]:
+    """
+    Idempotent entry point. Derives a stable key, makes the venue clientOrderId
+    deterministic from it (exchange-level dedup), and runs execution at most once
+    per key (engine-level dedup). A redelivered/duplicated signal is suppressed.
+    """
+    key = order.effective_idempotency_key()
+    # Deterministic clientOrderId so Binance also rejects a duplicate on retry.
+    order.client_order_id = deterministic_client_order_id(key)
+
+    if idem_store is None:  # safety: never silently lose dedup
+        return await _execute_order(order)
+
+    executed, result = await run_idempotent(
+        idem_store, key, settings.idempotency_ttl_s,
+        lambda: _execute_order(order),
+    )
+    if not executed:
+        logger.info("Suppressed duplicate order for key %s", key)
+        return [Execution(
+            order_id=order.client_order_id, exchange=getattr(adapter, "name", "unknown"),
+            instrument=order.instrument, side=order.side, price=0.0, quantity=0.0,
+            status="DUPLICATE_SUPPRESSED", correlation_id=order.correlation_id,
+        )]
+    return result
+
+
 # --------------------------------------------------------------------------- #
 # Pub/Sub signal subscriber
 # --------------------------------------------------------------------------- #
@@ -114,8 +147,12 @@ def _start_signal_subscriber(loop: asyncio.AbstractEventLoop) -> None:
         def callback(message) -> None:
             try:
                 data = json.loads(message.data)
-                order = Signal(**data).to_order()
-                asyncio.run_coroutine_threadsafe(process_order(order), loop)
+                signal = Signal(**data)
+                # Redelivery-safe: the Pub/Sub message_id is stable across
+                # at-least-once redelivery of the same publish.
+                if not signal.idempotency_key:
+                    signal.idempotency_key = getattr(message, "message_id", None)
+                asyncio.run_coroutine_threadsafe(process_order(signal.to_order()), loop)
                 message.ack()
             except Exception as exc:  # noqa: BLE001
                 logger.error("Bad signal message: %s", exc)
@@ -132,8 +169,9 @@ def _start_signal_subscriber(loop: asyncio.AbstractEventLoop) -> None:
 # --------------------------------------------------------------------------- #
 @app.on_event("startup")
 async def startup() -> None:
-    global adapter, risk, executor, sink, kill_switch
+    global adapter, risk, executor, sink, kill_switch, idem_store
     kill_switch = await build_kill_switch(settings.redis_host, settings.redis_port)
+    idem_store = await build_idempotency_store(settings.redis_host, settings.redis_port)
     sink = ExecutionSink(settings)
 
     # Fills reconciled from the exchange user-data stream are audited too.
@@ -169,9 +207,19 @@ async def health() -> dict:
 
 
 @app.post("/v1/order")
-async def submit_order(order: Order, background_tasks: BackgroundTasks) -> dict:
+async def submit_order(order: Order, background_tasks: BackgroundTasks,
+                       idempotency_key: str | None = Header(default=None)) -> dict:
+    # An explicit Idempotency-Key header lets REST callers dedup retries too.
+    if idempotency_key and not order.idempotency_key:
+        order.idempotency_key = idempotency_key
+    key = order.effective_idempotency_key()
     background_tasks.add_task(process_order, order)
-    return {"status": "accepted", "client_order_id": order.client_order_id, "mode": settings.mode.value}
+    return {
+        "status": "accepted",
+        "client_order_id": deterministic_client_order_id(key),
+        "idempotency_key": key,
+        "mode": settings.mode.value,
+    }
 
 
 @app.post("/order")  # legacy alias

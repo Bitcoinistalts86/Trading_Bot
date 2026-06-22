@@ -95,9 +95,14 @@ careful review:
    `/v1/positions` now reports exchange truth (`reconciled: true`), and the risk
    manager reads open-order count + positions from the store instead of local
    inference. New `/v1/reconciliation` endpoint exposes the live snapshot.
-3. **Idempotency / dedup.** `client_order_id` is generated and sent, but there is
-   no persistent store to dedupe retried signals or recover in-flight orders
-   after a crash.
+3. ~~**Idempotency / dedup.**~~ ✅ **Done** (PR: idempotency-recovery). Two
+   layers: (a) an engine-level `IdempotencyStore` (Redis `SET NX` claim, in-memory
+   fallback) suppresses duplicate/redelivered signals before risk/execution, and
+   (b) the venue `newClientOrderId` is now **deterministic** from the idempotency
+   key, so even a bypassed engine-dedup (cross-replica race, post-restart
+   redelivery) is rejected by Binance as a duplicate. Pub/Sub `message_id` is the
+   redelivery-safe fallback key; REST accepts an `Idempotency-Key` header; TWAP/VWAP
+   child slices carry deterministic per-slice ids.
 4. ~~**Persistent risk state.**~~ ✅ **Done** (PR: persistent-risk-state). The
    per-minute order-rate window and the daily realized-loss counter now live in
    Redis (`risk:orders` ZSET, `risk:pnl:{YYYYMMDD}` with TTL), shared across
