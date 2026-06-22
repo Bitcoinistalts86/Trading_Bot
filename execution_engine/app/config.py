@@ -15,6 +15,8 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 
+from .secrets import SecretResolver
+
 logger = logging.getLogger("execution_engine.config")
 
 
@@ -94,6 +96,12 @@ def load_settings() -> Settings:
         mode = ExecutionMode.PAPER
 
     s = Settings(mode=mode)
+
+    # Resolve exchange keys through Secret Manager (prod) or env (dev) before the
+    # safety gate, so the gate sees the actually-available credentials.
+    resolver = SecretResolver(s.project_id, os.environ.get("SECRETS_BACKEND", "env"))
+    s.binance_api_key = resolver.get("BINANCE_API_KEY", secret_id="binance-api-key")
+    s.binance_api_secret = resolver.get("BINANCE_API_SECRET", secret_id="binance-api-secret")
 
     # --- Safety gate: refuse to silently go live ------------------------------
     if mode in (ExecutionMode.LIVE, ExecutionMode.TESTNET):
