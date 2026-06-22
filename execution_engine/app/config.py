@@ -67,6 +67,7 @@ class Settings:
     signals_subscription: str = field(default_factory=lambda: os.environ.get("SIGNALS_SUBSCRIPTION", "signals.baseline.sub"))
     executions_topic: str = field(default_factory=lambda: os.environ.get("EXECUTIONS_TOPIC", "exec.lifecycle"))
     bq_trades_table: str = field(default_factory=lambda: os.environ.get("BQ_TRADES_TABLE", ""))  # e.g. proj.trading.trades
+    idempotency_ttl_s: int = field(default_factory=lambda: _i("IDEMPOTENCY_TTL_S", 86_400))
 
     # Simulation defaults (paper mode)
     paper_starting_usd: float = field(default_factory=lambda: _f("PAPER_STARTING_USD", 100_000.0))
