@@ -109,6 +109,11 @@ careful review:
    replicas and durable across restarts — so a crash no longer resets the
    daily-loss stand-down. In-memory fallback when Redis is absent. (Open-order
    count and positions already come from the reconciled PositionStore.)
+   **Update (PR: realized-pnl):** realized PnL is now *computed* from fills
+   (average-cost basis, `pnl.py`) and fed into the daily counter — paper fills via
+   the executor, testnet/live fills via the user-data stream (no double count).
+   This activates the daily-loss stand-down, which previously read a counter
+   nothing populated.
 5. ~~**Secret management (exchange keys).**~~ ✅ **Done** (PR: secret-manager).
    `SecretResolver` reads Binance keys from Google Secret Manager when
    `SECRETS_BACKEND=gcp` (or a per-secret `*_SECRET_RESOURCE` override is set), and
