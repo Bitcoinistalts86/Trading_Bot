@@ -30,6 +30,10 @@ class ExchangeAdapter(abc.ABC):
     async def place_order(self, order: Order, ref_price: float) -> Execution:
         """Submit a single (already risk-checked) order and return its Execution."""
 
+    async def place_oco(self, order: Order, ref_price: float) -> list[Execution]:
+        """Place a one-cancels-other pair (take-profit + stop). Override per venue."""
+        raise NotImplementedError("OCO not supported by this adapter")
+
     async def close(self) -> None:
         """Release any network resources. Override if needed."""
         return None

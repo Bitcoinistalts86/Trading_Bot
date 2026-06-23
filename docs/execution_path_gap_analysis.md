@@ -123,8 +123,11 @@ careful review:
 6. **Spot vs. Futures / margin.** This adapter is Spot. Futures (the connector
    already streams `fapi` data) needs `/fapi/v1/order`, leverage/position-mode
    handling, and liquidation-aware risk.
-7. **Order types beyond MARKET/LIMIT.** No stop-loss, take-profit, or OCO yet —
-   these are table stakes for risk-managed live trading.
+7. ~~**Order types beyond MARKET/LIMIT.**~~ ✅ **Done** (PR: stop-oco-orders).
+   STOP_LOSS, STOP_LIMIT, TAKE_PROFIT, TAKE_PROFIT_LIMIT, and OCO. Native
+   server-side on Binance (stop orders + `/api/v3/order/oco`); simulated in paper
+   mode as resting orders that fire on price updates (`update_mark_price`), with
+   OCO cancel-the-other semantics. Pure trigger logic in `conditional.py`.
 8. **Real mark price wiring.** The executor reads `get_mark_price`; in paper mode
    this uses seeds. It should subscribe to the market-data pipeline's price feed
    rather than calling the ticker endpoint per order.

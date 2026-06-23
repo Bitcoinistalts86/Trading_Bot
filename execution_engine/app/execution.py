@@ -16,7 +16,7 @@ import asyncio
 import logging
 
 from .adapters.base import ExchangeAdapter
-from .models import Execution, Order, OrderType, Side
+from .models import CONDITIONAL_TYPES, Execution, Order, OrderType, Side
 from .risk import RiskManager
 
 logger = logging.getLogger("execution_engine.executor")
@@ -47,8 +47,14 @@ class Executor:
 
     async def execute(self, order: Order) -> list[Execution]:
         ref_price = await self.adapter.get_mark_price(order.instrument)
-        if order.order_type in (OrderType.MARKET, OrderType.LIMIT):
+        if order.order_type in (OrderType.MARKET, OrderType.LIMIT) or order.order_type in CONDITIONAL_TYPES:
+            # Conditional orders rest (paper) or submit natively (Binance) via place_order.
             return [await self._fill_child(order, ref_price)]
+        if order.order_type == OrderType.OCO:
+            execs = await self.adapter.place_oco(order, ref_price)
+            for ex in execs:
+                await self._emit(ex)
+            return execs
         if order.order_type == OrderType.TWAP:
             return await self._execute_sliced(order, [1 / 10] * 10)
         if order.order_type == OrderType.VWAP:
