@@ -39,6 +39,7 @@ from .idempotency import (
 )
 from .kill_switch import KillSwitchLevel, build_kill_switch
 from .models import Execution, Order, Signal
+from .pnl import PnLTracker
 from .risk import RiskManager
 from .risk_state import build_risk_state
 from .sinks import ExecutionSink
@@ -56,6 +57,7 @@ executor: Executor | None = None
 sink: ExecutionSink | None = None
 kill_switch = None
 idem_store = None
+pnl_tracker = None
 model_breaker = pybreaker.CircuitBreaker(fail_max=5, reset_timeout=60)
 
 
@@ -77,9 +79,26 @@ async def get_prediction(instrument: str) -> dict:
         return {"prediction": r.json()}
 
 
+_FILL_STATUSES = {"SIMULATED", "FILLED", "PARTIALLY_FILLED"}
+
+
+async def _record_pnl(instrument: str, side, price: float, qty: float, fee: float) -> None:
+    if pnl_tracker is None or risk is None:
+        return
+    delta = pnl_tracker.record_fill(instrument, str(side), price, qty, fee)
+    if delta:
+        await risk.record_realized_pnl(delta)
+
+
 async def _handle_execution(ex: Execution) -> None:
     if sink:
         await sink.publish(ex)
+    # Paper mode has no user-data stream, so executions ARE the fills here.
+    # In testnet/live the stream (_on_reconciled_fill) is the source of truth,
+    # so we don't also count REST executions -- that would double-count.
+    if settings.is_simulation and ex.quantity > 0 and ex.status in _FILL_STATUSES:
+        side = ex.side.value if hasattr(ex.side, "value") else ex.side
+        await _record_pnl(ex.instrument, side, ex.price, ex.quantity, ex.fees)
 
 
 async def _execute_order(order: Order) -> list[Execution]:
@@ -169,14 +188,20 @@ def _start_signal_subscriber(loop: asyncio.AbstractEventLoop) -> None:
 # --------------------------------------------------------------------------- #
 @app.on_event("startup")
 async def startup() -> None:
-    global adapter, risk, executor, sink, kill_switch, idem_store
+    global adapter, risk, executor, sink, kill_switch, idem_store, pnl_tracker
     kill_switch = await build_kill_switch(settings.redis_host, settings.redis_port)
     idem_store = await build_idempotency_store(settings.redis_host, settings.redis_port)
     sink = ExecutionSink(settings)
+    pnl_tracker = PnLTracker()
 
-    # Fills reconciled from the exchange user-data stream are audited too.
+    # Testnet/live: the user-data stream is the authoritative fill source, so
+    # realized PnL is computed here (and not from REST executions, to avoid
+    # double counting).
     async def _on_reconciled_fill(fill: dict) -> None:
         logger.info("Reconciled fill: %s", fill)
+        await _record_pnl(fill.get("symbol"), fill.get("side"),
+                          float(fill.get("price", 0) or 0), float(fill.get("qty", 0) or 0),
+                          float(fill.get("fee", 0) or 0))
 
     adapter = await build_adapter(settings, on_fill=_on_reconciled_fill)
     risk_state = await build_risk_state(settings.redis_host, settings.redis_port)
