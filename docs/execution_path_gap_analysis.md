@@ -117,9 +117,9 @@ careful review:
 5. ~~**Secret management (exchange keys).**~~ ✅ **Done** (PR: secret-manager).
    `SecretResolver` reads Binance keys from Google Secret Manager when
    `SECRETS_BACKEND=gcp` (or a per-secret `*_SECRET_RESOURCE` override is set), and
-   falls back to env for local/dev. Secret values are never logged. *Follow-up:*
-   apply the same resolver to the auth service's `JWT_SECRET` (currently env), and
-   grant the service account `secretAccessor` in Terraform.
+   falls back to env for local/dev. Secret values are never logged. The auth
+   service's `JWT_SECRET` now uses the same resolver (PR: auth-jwt-secret-manager).
+   *Remaining deploy step:* grant the service accounts `secretAccessor` in Terraform.
 6. **Spot vs. Futures / margin.** This adapter is Spot. Futures (the connector
    already streams `fapi` data) needs `/fapi/v1/order`, leverage/position-mode
    handling, and liquidation-aware risk.

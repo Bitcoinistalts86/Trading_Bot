@@ -26,7 +26,10 @@ ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", 
 REFRESH_TOKEN_EXPIRE_DAYS = int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", 7))
 
 # Dev default is explicit and obviously-not-secret so it can't be mistaken for safe.
-SECRET_KEY = os.environ.get("JWT_SECRET", "dev-insecure-change-me")
+# In production set SECRETS_BACKEND=gcp (Secret Manager) or provide JWT_SECRET.
+from .secrets import resolve_secret
+
+SECRET_KEY = resolve_secret("JWT_SECRET", secret_id="jwt-secret", default="dev-insecure-change-me")
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login", auto_error=False)
 
