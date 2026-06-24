@@ -204,6 +204,9 @@ async def startup() -> None:
                           float(fill.get("fee", 0) or 0))
 
     adapter = await build_adapter(settings, on_fill=_on_reconciled_fill)
+    # Paper mode: when a resting stop/TP/OCO triggers, route it like any fill.
+    if hasattr(adapter, "on_conditional_fill"):
+        adapter.on_conditional_fill = _handle_execution
     risk_state = await build_risk_state(settings.redis_host, settings.redis_port)
     risk = RiskManager(settings.limits, kill_switch, state=risk_state)
     # If the adapter reconciles against the exchange, risk reads truth from it.

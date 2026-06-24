@@ -166,19 +166,34 @@ class BinanceAdapter:
                 out[bal["asset"]] = free
         return out
 
+    # Conditional order types -> Binance order types.
+    _COND_TYPE_MAP = {
+        OrderType.STOP_LOSS: "STOP_LOSS",
+        OrderType.STOP_LIMIT: "STOP_LOSS_LIMIT",
+        OrderType.TAKE_PROFIT: "TAKE_PROFIT",
+        OrderType.TAKE_PROFIT_LIMIT: "TAKE_PROFIT_LIMIT",
+    }
+    _LIMIT_STYLE = {OrderType.LIMIT, OrderType.STOP_LIMIT, OrderType.TAKE_PROFIT_LIMIT}
+
     # --- order submission ---------------------------------------------------
     async def place_order(self, order: Order, ref_price: float) -> Execution:
-        is_limit = order.order_type == OrderType.LIMIT
-        if is_limit and not order.price:
-            raise ValueError("LIMIT order requires a price.")
+        is_limit = order.order_type in self._LIMIT_STYLE
+        has_stop = order.order_type in self._COND_TYPE_MAP
+        # The limit price for a *_LIMIT order is `price`, or `stop_limit_price` for stops.
+        limit_price = order.price if order.order_type == OrderType.LIMIT else order.stop_limit_price
+        if is_limit and not limit_price:
+            raise ValueError(f"{order.order_type.value} requires a limit price.")
+        if has_stop and not order.stop_price:
+            raise ValueError(f"{order.order_type.value} requires a stop_price.")
 
-        # Round onto the symbol's valid grid before signing. Without this the
-        # exchange rejects anything off-step/off-tick or under min-notional.
+        # Round onto the symbol's valid grid before signing.
         filt = await self._get_filters(order.instrument)
+        stop_str = None
         if filt is not None:
             qty_dec = filt.round_quantity(order.quantity)
-            price_dec = filt.round_price(order.price) if is_limit else None
-            notional_ref = price_dec if is_limit else Decimal(str(ref_price))
+            price_dec = filt.round_price(limit_price) if is_limit else None
+            stop_dec = filt.round_price(order.stop_price) if has_stop else None
+            notional_ref = price_dec if is_limit else (stop_dec if has_stop else Decimal(str(ref_price)))
             reason = filt.validate(qty_dec, notional_ref)
             if reason:
                 logger.warning("Order %s violates symbol filters: %s", order.client_order_id, reason)
@@ -189,15 +204,20 @@ class BinanceAdapter:
                 )
             qty_str = fmt(qty_dec, filt.qty_decimals)
             price_str = fmt(price_dec, filt.price_decimals) if is_limit else None
+            stop_str = fmt(stop_dec, filt.price_decimals) if has_stop else None
         else:
-            # Filters unavailable -> best-effort send with the old formatter.
             qty_str = _fmt(order.quantity)
-            price_str = _fmt(order.price) if is_limit else None
+            price_str = _fmt(limit_price) if is_limit else None
+            stop_str = _fmt(order.stop_price) if has_stop else None
 
+        binance_type = (
+            self._COND_TYPE_MAP[order.order_type] if has_stop
+            else ("LIMIT" if is_limit else "MARKET")
+        )
         params = {
             "symbol": order.instrument.upper(),
             "side": order.side.value,
-            "type": "LIMIT" if is_limit else "MARKET",
+            "type": binance_type,
             "quantity": qty_str,
             "newClientOrderId": order.client_order_id,
             "newOrderRespType": "FULL",
@@ -207,6 +227,8 @@ class BinanceAdapter:
         if is_limit:
             params["price"] = price_str
             params["timeInForce"] = "GTC"
+        if has_stop:
+            params["stopPrice"] = stop_str
 
         body = self._sign(params)
         r = await self._client.post(
@@ -222,6 +244,48 @@ class BinanceAdapter:
             )
         data = r.json()
         return self._parse_execution(order, data, ref_price)
+
+    async def place_oco(self, order: Order, ref_price: float) -> list[Execution]:
+        """Submit a native Binance OCO (take-profit limit + stop-limit)."""
+        if not (order.tp_price and order.stop_price):
+            raise ValueError("OCO requires tp_price and stop_price")
+        filt = await self._get_filters(order.instrument)
+        if filt is not None:
+            qty_s = fmt(filt.round_quantity(order.quantity), filt.qty_decimals)
+            tp_s = fmt(filt.round_price(order.tp_price), filt.price_decimals)
+            stop_s = fmt(filt.round_price(order.stop_price), filt.price_decimals)
+            stop_limit_s = fmt(filt.round_price(order.stop_limit_price or order.stop_price), filt.price_decimals)
+        else:
+            qty_s, tp_s, stop_s = _fmt(order.quantity), _fmt(order.tp_price), _fmt(order.stop_price)
+            stop_limit_s = _fmt(order.stop_limit_price or order.stop_price)
+
+        params = {
+            "symbol": order.instrument.upper(), "side": order.side.value, "quantity": qty_s,
+            "price": tp_s,                       # take-profit limit leg
+            "stopPrice": stop_s,                 # stop trigger
+            "stopLimitPrice": stop_limit_s, "stopLimitTimeInForce": "GTC",
+            "listClientOrderId": order.client_order_id,
+            "newOrderRespType": "FULL", "timestamp": self._timestamp(), "recvWindow": 5000,
+        }
+        body = self._sign(params)
+        r = await self._client.post(
+            "/api/v3/order/oco", content=body,
+            headers={**self._headers(), "Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if r.status_code >= 400:
+            logger.error("Binance OCO rejected (%s): %s", r.status_code, r.text)
+            return [Execution(order_id=order.client_order_id, exchange=self.name,
+                              instrument=order.instrument, side=order.side, price=ref_price,
+                              quantity=0.0, status="REJECTED", correlation_id=order.correlation_id)]
+        reports = r.json().get("orderReports", [])
+        return [Execution(order_id=str(rep.get("orderId", order.client_order_id)), exchange=self.name,
+                          instrument=order.instrument, side=order.side,
+                          price=float(rep.get("price", 0) or rep.get("stopPrice", 0) or 0),
+                          quantity=0.0, status=rep.get("status", "NEW"),
+                          correlation_id=order.correlation_id) for rep in reports] or \
+               [Execution(order_id=order.client_order_id, exchange=self.name, instrument=order.instrument,
+                          side=order.side, price=order.tp_price, quantity=0.0, status="NEW",
+                          correlation_id=order.correlation_id)]
 
     def _parse_execution(self, order: Order, data: dict, ref_price: float) -> Execution:
         fills = data.get("fills", []) or []

@@ -27,6 +27,17 @@ class OrderType(str, Enum):
     LIMIT = "LIMIT"
     TWAP = "TWAP"
     VWAP = "VWAP"
+    STOP_LOSS = "STOP_LOSS"                  # stop-market: trigger -> market
+    STOP_LIMIT = "STOP_LIMIT"                # trigger -> limit at stop_limit_price
+    TAKE_PROFIT = "TAKE_PROFIT"              # tp-market
+    TAKE_PROFIT_LIMIT = "TAKE_PROFIT_LIMIT"  # trigger -> limit
+    OCO = "OCO"                              # one-cancels-other: TP limit + stop
+
+
+CONDITIONAL_TYPES = {
+    OrderType.STOP_LOSS, OrderType.STOP_LIMIT,
+    OrderType.TAKE_PROFIT, OrderType.TAKE_PROFIT_LIMIT,
+}
 
 
 def _new_id(prefix: str) -> str:
@@ -48,6 +59,10 @@ class Signal(BaseModel):
     # Stable per-intent key for deduplication. If the producer doesn't set one,
     # the subscriber falls back to the Pub/Sub message_id (redelivery-safe).
     idempotency_key: Optional[str] = None
+    # Conditional-order params (stop / take-profit / OCO).
+    stop_price: Optional[float] = None
+    stop_limit_price: Optional[float] = None
+    tp_price: Optional[float] = None
 
     def to_order(self) -> "Order":
         return Order(
@@ -62,6 +77,9 @@ class Signal(BaseModel):
             correlation_id=self.correlation_id or _new_id("corr"),
             strategy_id=self.strategy_id,
             idempotency_key=self.idempotency_key,
+            stop_price=self.stop_price,
+            stop_limit_price=self.stop_limit_price,
+            tp_price=self.tp_price,
         )
 
 
@@ -78,9 +96,13 @@ class Order(BaseModel):
     correlation_id: str = Field(default_factory=lambda: _new_id("corr"))
     strategy_id: str = "unknown"
     idempotency_key: Optional[str] = None
+    # Conditional-order params.
+    stop_price: Optional[float] = None        # trigger price (stop / take-profit)
+    stop_limit_price: Optional[float] = None  # limit price once a *_LIMIT stop triggers
+    tp_price: Optional[float] = None           # take-profit limit leg (OCO)
 
     def notional(self, ref_price: float) -> float:
-        return self.quantity * (self.price or ref_price)
+        return self.quantity * (self.price or self.stop_price or ref_price)
 
     def effective_idempotency_key(self) -> str:
         """The key used for dedup. Precedence: explicit key > correlation_id."""
