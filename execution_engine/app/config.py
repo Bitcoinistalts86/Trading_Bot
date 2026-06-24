@@ -49,6 +49,7 @@ class RiskLimits:
     max_orders_per_minute: int = field(default_factory=lambda: _i("RISK_MAX_ORDERS_PER_MINUTE", 60))
     max_daily_loss_usd: float = field(default_factory=lambda: _f("RISK_MAX_DAILY_LOSS_USD", 2_500.0))
     max_slippage_bps: float = field(default_factory=lambda: _f("RISK_MAX_SLIPPAGE_BPS", 50.0))
+    max_leverage: int = field(default_factory=lambda: _i("RISK_MAX_LEVERAGE", 5))  # futures cap
 
 
 @dataclass
@@ -58,9 +59,17 @@ class Settings:
     region: str = field(default_factory=lambda: os.environ.get("REGION", "us-central1"))
 
     # Exchange
-    exchange: str = field(default_factory=lambda: os.environ.get("EXCHANGE", "binance"))
+    exchange: str = field(default_factory=lambda: os.environ.get("EXCHANGE", "binance"))  # binance | binance-futures
     binance_api_key: str = field(default_factory=lambda: os.environ.get("BINANCE_API_KEY", ""))
     binance_api_secret: str = field(default_factory=lambda: os.environ.get("BINANCE_API_SECRET", ""))
+    # Futures (USD-M) settings -- only used when exchange == "binance-futures".
+    futures_leverage: int = field(default_factory=lambda: _i("FUTURES_LEVERAGE", 3))
+    futures_margin_type: str = field(default_factory=lambda: os.environ.get("FUTURES_MARGIN_TYPE", "ISOLATED"))
+    futures_symbols: str = field(default_factory=lambda: os.environ.get("FUTURES_SYMBOLS", "BTCUSDT,ETHUSDT"))
+
+    @property
+    def is_futures(self) -> bool:
+        return self.exchange == "binance-futures"
 
     # Dependencies
     model_gateway_url: str = field(default_factory=lambda: os.environ.get("MODEL_GATEWAY_URL", ""))
@@ -102,6 +111,12 @@ def load_settings() -> Settings:
     resolver = SecretResolver(s.project_id, os.environ.get("SECRETS_BACKEND", "env"))
     s.binance_api_key = resolver.get("BINANCE_API_KEY", secret_id="binance-api-key")
     s.binance_api_secret = resolver.get("BINANCE_API_SECRET", secret_id="binance-api-secret")
+
+    # Futures leverage is hard-capped by the risk limit -- never exceed it silently.
+    if s.is_futures and s.futures_leverage > s.limits.max_leverage:
+        logger.warning("FUTURES_LEVERAGE %d exceeds RISK_MAX_LEVERAGE %d; clamping.",
+                       s.futures_leverage, s.limits.max_leverage)
+        s.futures_leverage = s.limits.max_leverage
 
     # --- Safety gate: refuse to silently go live ------------------------------
     if mode in (ExecutionMode.LIVE, ExecutionMode.TESTNET):

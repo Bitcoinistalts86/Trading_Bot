@@ -16,6 +16,13 @@ async def build_adapter(settings: Settings, on_fill=None) -> ExchangeAdapter:
         return PaperAdapter(settings)
 
     # TESTNET / LIVE -> real signed adapter, with exchange-truth reconciliation.
+    if settings.is_futures:
+        from .binance_futures import FuturesBinanceAdapter
+        fut = FuturesBinanceAdapter(settings)
+        await fut.sync_time()
+        await fut.configure()  # leverage + margin per symbol
+        return fut
+
     from .binance import BinanceAdapter
 
     adapter = BinanceAdapter(settings)

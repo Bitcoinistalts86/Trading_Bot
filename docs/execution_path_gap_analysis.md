@@ -120,9 +120,13 @@ careful review:
    falls back to env for local/dev. Secret values are never logged. The auth
    service's `JWT_SECRET` now uses the same resolver (PR: auth-jwt-secret-manager).
    *Remaining deploy step:* grant the service accounts `secretAccessor` in Terraform.
-6. **Spot vs. Futures / margin.** This adapter is Spot. Futures (the connector
-   already streams `fapi` data) needs `/fapi/v1/order`, leverage/position-mode
-   handling, and liquidation-aware risk.
+6. **Spot vs. Futures / margin.** 🟡 **First slice done** (PR: futures-support).
+   `FuturesBinanceAdapter` (`fapi`): signed REST orders incl. STOP/TAKE_PROFIT
+   variants, leverage + margin-type setup per symbol, futures symbol-filter
+   rounding, selected via `EXCHANGE=binance-futures`; leverage hard-capped by
+   `RISK_MAX_LEVERAGE`. **Validate on the futures testnet before live.** Remaining:
+   futures user-data stream reconciliation (`ACCOUNT_UPDATE`/`ORDER_TRADE_UPDATE`),
+   hedge mode, funding in PnL, and liquidation-distance risk (see SYSTEM_UPGRADES.md).
 7. ~~**Order types beyond MARKET/LIMIT.**~~ ✅ **Done** (PR: stop-oco-orders).
    STOP_LOSS, STOP_LIMIT, TAKE_PROFIT, TAKE_PROFIT_LIMIT, and OCO. Native
    server-side on Binance (stop orders + `/api/v3/order/oco`); simulated in paper
