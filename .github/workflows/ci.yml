@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  execution-tests:
+    name: Execution engine tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r execution_engine/requirements.txt
+          pip install pytest fakeredis
+      - name: Run tests
+        run: PYTHONPATH=. pytest execution_engine/tests -q
+
+  auth-tests:
+    name: Auth service tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r auth_service/requirements.txt
+          pip install pytest
+      - name: Run tests
+        run: PYTHONPATH=. pytest auth_service/tests -q
+
+  frontend-build:
+    name: Frontend build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install and build
+        working-directory: frontend
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
