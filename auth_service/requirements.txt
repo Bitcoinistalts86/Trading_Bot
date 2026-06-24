@@ -5,3 +5,4 @@ pydantic[email]>=2
 bcrypt
 python-jose[cryptography]
 psycopg2-binary
+google-cloud-secret-manager
