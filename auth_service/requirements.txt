@@ -6,3 +6,6 @@ bcrypt
 python-jose[cryptography]
 psycopg2-binary
 google-cloud-secret-manager
+
+# Required by fastapi.testclient.TestClient (used in tests).
+httpx
